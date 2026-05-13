@@ -1767,46 +1767,18 @@ function QuickDraggableEvent({
 
 type DraggableBottomSheetProps = {
   children: ReactNode;
-  closeSignal?: number;
   onClose: () => void;
   style?: object;
 };
 
 function DraggableBottomSheet({
   children,
-  closeSignal = 0,
   onClose,
   style,
 }: DraggableBottomSheetProps) {
   const styles = useAgendaStyles();
   const translateY = useRef(new Animated.Value(0)).current;
   const startYRef = useRef(0);
-  const previousCloseSignalRef = useRef(closeSignal);
-
-  useEffect(() => {
-    translateY.setValue(24);
-    Animated.spring(translateY, {
-      damping: 18,
-      mass: 0.9,
-      stiffness: 160,
-      toValue: 0,
-      useNativeDriver: true,
-    }).start();
-  }, [translateY]);
-
-  useEffect(() => {
-    if (previousCloseSignalRef.current === closeSignal) {
-      return;
-    }
-
-    previousCloseSignalRef.current = closeSignal;
-
-    Animated.timing(translateY, {
-      duration: 200,
-      toValue: 520,
-      useNativeDriver: true,
-    }).start(onClose);
-  }, [closeSignal, onClose, translateY]);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -1824,11 +1796,7 @@ function DraggableBottomSheet({
       },
       onPanResponderRelease: (_event, gestureState) => {
         if (gestureState.dy > 130 || gestureState.vy > 1.05) {
-          Animated.timing(translateY, {
-            duration: 200,
-            toValue: 520,
-            useNativeDriver: true,
-          }).start(onClose);
+          onClose();
           return;
         }
 
@@ -2561,7 +2529,6 @@ export default function HomeScreen() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isEventModalVisible, setIsEventModalVisible] = useState(false);
   const [isEventDetailVisible, setIsEventDetailVisible] = useState(false);
-  const eventDetailOverlayOpacity = useRef(new Animated.Value(0)).current;
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [selectedEventOccurrenceDate, setSelectedEventOccurrenceDate] =
     useState<Date | null>(null);
@@ -2587,6 +2554,7 @@ export default function HomeScreen() {
   const deleteConfirmScale = useRef(new Animated.Value(0.9)).current;
   const signOutConfirmOpacity = useRef(new Animated.Value(0)).current;
   const signOutConfirmScale = useRef(new Animated.Value(0.9)).current;
+  const eventDetailFadeOpacity = useRef(new Animated.Value(0)).current;
   const syncTooltipOpacity = useRef(new Animated.Value(0)).current;
   const syncTooltipScale = useRef(new Animated.Value(0.9)).current;
   const syncTooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3067,6 +3035,34 @@ export default function HomeScreen() {
     (total, day) => total + day.events.length,
     0,
   );
+  const activityWeekDays = useMemo(
+    () =>
+      Array.from({ length: 7 }, (_, index) => {
+        const date = addDays(currentWeekStart, index);
+        const dayEvents = events
+          .filter((event) => eventOccursOnDate(event, date))
+          .sort((firstEvent, secondEvent) =>
+            firstEvent.startTime.localeCompare(secondEvent.startTime),
+          );
+
+        return {
+          completedEvents: dayEvents.filter((event) => event.completed).length,
+          date,
+          events: dayEvents,
+          label: WEEK_DAYS[index],
+        };
+      }),
+    [currentWeekStart, events],
+  );
+  const allWeekOccurrences = useMemo(
+    () =>
+      getEventOccurrencesBetween(
+        events,
+        currentWeekStart,
+        addDays(currentWeekStart, 6),
+      ),
+    [currentWeekStart, events],
+  );
   const weekSummaryEvents = useMemo(() => {
     const categoryFilteredEvents = events.filter(
       (event) =>
@@ -3087,6 +3083,66 @@ export default function HomeScreen() {
   const weekCompletionRatio =
     weekSummaryEvents.length > 0
       ? completedWeekEvents / weekSummaryEvents.length
+      : 0;
+  const activityWeekCompletedEvents = allWeekOccurrences.filter(
+    ({ event }) => event.completed,
+  ).length;
+  const activityWeekPendingEvents =
+    allWeekOccurrences.length - activityWeekCompletedEvents;
+  const uniqueWeekEventIds = useMemo(
+    () => Array.from(new Set(allWeekOccurrences.map(({ event }) => event.id))),
+    [allWeekOccurrences],
+  );
+  const activityWeekTasks = useMemo(
+    () => uniqueWeekEventIds.flatMap((eventId) => getTasksForEvent(eventId)),
+    [getTasksForEvent, uniqueWeekEventIds],
+  );
+  const activityWeekCompletedTasks = activityWeekTasks.filter(
+    (task) => task.completed,
+  ).length;
+  const activityMaxDayEvents = Math.max(
+    1,
+    ...activityWeekDays.map((day) => day.events.length),
+  );
+  const activityWeekBars = activityWeekDays.map((day) => ({
+    ...day,
+    barHeight: Math.max(12, (day.events.length / activityMaxDayEvents) * 52),
+  }));
+  const busiestActivityDay = activityWeekDays.reduce(
+    (busiestDay, day) =>
+      day.events.length > busiestDay.events.length ? day : busiestDay,
+    activityWeekDays[0],
+  );
+  const topActivityCategory = useMemo(() => {
+    const categoryCounts = allWeekOccurrences.reduce(
+      (counts, { event }) => ({
+        ...counts,
+        [event.category]: (counts[event.category] ?? 0) + 1,
+      }),
+      {} as Record<string, number>,
+    );
+    const topCategoryEntry = Object.entries(categoryCounts).sort(
+      (firstCategory, secondCategory) =>
+        secondCategory[1] - firstCategory[1],
+    )[0];
+
+    if (!topCategoryEntry) {
+      return {
+        category: getCategory(FALLBACK_CATEGORY_ID),
+        count: 0,
+      };
+    }
+
+    return {
+      category: getCategory(topCategoryEntry[0]),
+      count: topCategoryEntry[1],
+    };
+  }, [allWeekOccurrences, getCategory]);
+  const activityWeekCompletionPercent =
+    allWeekOccurrences.length > 0
+      ? Math.round(
+          (activityWeekCompletedEvents / allWeekOccurrences.length) * 100,
+        )
       : 0;
   const todayOccurrences = useMemo(
     () => getEventOccurrencesBetween(events, currentTime, currentTime),
@@ -3133,6 +3189,34 @@ export default function HomeScreen() {
     todayOccurrences.length === 0
       ? "Sin planes guardados para hoy"
       : `${todayOccurrences.length} planes · ${todayPendingEvents} pendientes`;
+  const activityInsight = (() => {
+    if (allWeekOccurrences.length === 0) {
+      return "Semana ligera: todavía no hay planes guardados.";
+    }
+
+    if (overdueReminderCount > 0) {
+      return `${overdueReminderCount} ${
+        overdueReminderCount === 1 ? "plan atrasado" : "planes atrasados"
+      } esperan atención.`;
+    }
+
+    if (
+      activityWeekTasks.length > 0 &&
+      activityWeekCompletedTasks === activityWeekTasks.length
+    ) {
+      return "Checklist semanal completada. Buena señal.";
+    }
+
+    if (busiestActivityDay.events.length >= 3) {
+      return `${busiestActivityDay.label} concentra ${busiestActivityDay.events.length} planes esta semana.`;
+    }
+
+    if (topActivityCategory.count > 1) {
+      return `${topActivityCategory.category.label} es tu categoría más activa.`;
+    }
+
+    return `${activityWeekPendingEvents} pendientes y ${activityWeekCompletedEvents} completados esta semana.`;
+  })();
   const activeFilterLabel =
     activeCategoryFilter === "all"
       ? "Todo"
@@ -3153,6 +3237,11 @@ export default function HomeScreen() {
       upcomingWindowEnd,
     ).filter(({ occurrenceDate }) => occurrenceDate >= today);
   }, [events, today, upcomingWindowEnd]);
+  const upcomingPreviewEvents = upcomingEvents.slice(0, 3);
+  const upcomingExtraCount = Math.max(
+    upcomingEvents.length - upcomingPreviewEvents.length,
+    0,
+  );
   const scopedOccurrences = useMemo(() => {
     const categoryFilteredEvents = events.filter(
       (event) =>
@@ -3330,6 +3419,11 @@ export default function HomeScreen() {
     setIsCalendarVisible(true);
   }
 
+  function openSearchPanel(nextScope: SearchScope = searchScope) {
+    setSearchScope(nextScope);
+    setIsFiltersExpanded(true);
+  }
+
   function changeCalendarMonth(months: number) {
     const nextMonthDate = addMonths(calendarMonthDate, months);
 
@@ -3381,15 +3475,16 @@ export default function HomeScreen() {
   }
 
   function openEventDetail(event: AgendaEvent, occurrenceDate?: Date) {
+    eventDetailFadeOpacity.stopAnimation();
+    eventDetailFadeOpacity.setValue(0);
     setSelectedEventId(event.id);
     setSelectedEventOccurrenceDate(
       occurrenceDate ??
         getNextOccurrenceStart(event, currentTime) ??
         getEventStartDate(event),
     );
-    eventDetailOverlayOpacity.setValue(0);
     setIsEventDetailVisible(true);
-    Animated.timing(eventDetailOverlayOpacity, {
+    Animated.timing(eventDetailFadeOpacity, {
       duration: 180,
       toValue: 1,
       useNativeDriver: true,
@@ -3397,13 +3492,20 @@ export default function HomeScreen() {
   }
 
   function finishCloseEventDetail() {
+    eventDetailFadeOpacity.setValue(0);
     setIsEventDetailVisible(false);
     setSelectedEventId(null);
     setSelectedEventOccurrenceDate(null);
   }
 
   function closeEventDetail() {
-    Animated.timing(eventDetailOverlayOpacity, {
+    if (!isEventDetailVisible) {
+      finishCloseEventDetail();
+      return;
+    }
+
+    eventDetailFadeOpacity.stopAnimation();
+    Animated.timing(eventDetailFadeOpacity, {
       duration: 180,
       toValue: 0,
       useNativeDriver: true,
@@ -3419,6 +3521,7 @@ export default function HomeScreen() {
       return;
     }
 
+    eventDetailFadeOpacity.setValue(0);
     setIsEventDetailVisible(false);
     openEditEventModal(selectedDetailEvent);
   }
@@ -3437,6 +3540,15 @@ export default function HomeScreen() {
     }
 
     requestDeleteEvent(selectedDetailEvent.id, "detail");
+  }
+
+  function duplicateSelectedDetailEvent() {
+    if (!selectedDetailEvent) {
+      return;
+    }
+
+    duplicateEvent(selectedDetailEvent);
+    closeEventDetail();
   }
 
   function openEditEventModal(event: AgendaEvent) {
@@ -3467,7 +3579,7 @@ export default function HomeScreen() {
     setIsEventModalVisible(true);
   }
 
-  function closeEventModal() {
+  function finishCloseEventModal() {
     setIsEventModalVisible(false);
     setActiveTimeField(null);
     setEditingEventId(null);
@@ -3476,6 +3588,11 @@ export default function HomeScreen() {
     setFormErrors({});
     setFormTasks([]);
     setTaskDraft("");
+  }
+
+  function closeEventModal() {
+    Keyboard.dismiss();
+    finishCloseEventModal();
   }
 
   function openDayDetail(index: number) {
@@ -4956,186 +5073,135 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        <View style={styles.proSearchRow}>
-          <View style={styles.quickSearchCardClean}>
-            <Ionicons name="search-outline" size={19} color="#6B7280" />
-            <TextInput
-              autoCapitalize="none"
-              onChangeText={setSearchQuery}
-              placeholder="Buscar planes"
-              placeholderTextColor="#9CA3AF"
-              style={styles.quickSearchInput}
-              value={searchQuery}
-            />
-            {searchQuery ? (
+        <View style={styles.activityPanel}>
+          <View style={styles.activityHeader}>
+            <View style={styles.activityHeaderText}>
+              <Text style={styles.sectionLabel}>Resumen</Text>
+              <Text style={styles.activityTitle}>Ritmo de la semana</Text>
+              <Text style={styles.activitySubtitle} numberOfLines={1}>
+                {formatWeekRange(currentWeekStart)} · {allWeekOccurrences.length}{" "}
+                {allWeekOccurrences.length === 1 ? "plan" : "planes"}
+              </Text>
+            </View>
+            <View style={styles.activityMonthBadge}>
+              <Text style={styles.activityMonthValue}>
+                {activityWeekCompletionPercent}%
+              </Text>
+              <Text style={styles.activityMonthLabel}>Semana</Text>
+            </View>
+          </View>
+
+          <View style={styles.activityStatsGrid}>
+            <View style={styles.activityStatCard}>
+              <Ionicons name="checkmark-done-outline" size={18} color="#3D8B7D" />
+              <Text style={styles.activityStatValue}>
+                {activityWeekCompletedEvents}/{allWeekOccurrences.length}
+              </Text>
+              <Text style={styles.activityStatLabel}>Eventos</Text>
+            </View>
+            <View style={styles.activityStatCard}>
+              <Ionicons name="list-outline" size={18} color="#4D74B8" />
+              <Text style={styles.activityStatValue}>
+                {activityWeekCompletedTasks}/{activityWeekTasks.length}
+              </Text>
+              <Text style={styles.activityStatLabel}>Tareas</Text>
+            </View>
+            <View style={styles.activityStatCard}>
+              <Ionicons
+                name={topActivityCategory.category.icon}
+                size={18}
+                color={topActivityCategory.category.color}
+              />
+              <Text style={styles.activityStatValue} numberOfLines={1}>
+                {topActivityCategory.count > 0
+                  ? topActivityCategory.category.label
+                  : "Sin datos"}
+              </Text>
+              <Text style={styles.activityStatLabel}>Categoría</Text>
+            </View>
+          </View>
+
+          <View style={styles.activityBarsRow}>
+            {activityWeekBars.map((day) => {
+              const hasEvents = day.events.length > 0;
+
+              return (
+                <View key={`${day.label}-${toDateKey(day.date)}`} style={styles.activityBarItem}>
+                  <View style={styles.activityBarTrack}>
+                    <View
+                      style={[
+                        styles.activityBarFill,
+                        {
+                          backgroundColor:
+                            day.events.length > 0 &&
+                            day.completedEvents === day.events.length
+                              ? "#3D8B7D"
+                              : hasEvents
+                                ? "#E05D5D"
+                                : "#D8CEC2",
+                          height: day.barHeight,
+                        },
+                      ]}
+                    />
+                  </View>
+                  <Text style={styles.activityBarLabel}>{day.label}</Text>
+                  <Text style={styles.activityBarCount}>
+                    {day.events.length}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+
+          <View style={styles.activityInsightBox}>
+            <Ionicons name="sparkles-outline" size={18} color="#D28A2E" />
+            <Text style={styles.activityInsightText}>{activityInsight}</Text>
+          </View>
+
+          <View style={styles.activityActionsRow}>
+            <Pressable
+              style={styles.activitySearchButton}
+              onPress={() => openSearchPanel()}
+            >
+              <Ionicons
+                name={hasActiveFilters ? "options-outline" : "search-outline"}
+                size={18}
+                color="#FFFFFF"
+              />
+              <Text style={styles.activitySearchButtonText} numberOfLines={1}>
+                {hasActiveFilters ? filtersTriggerSubtitle : "Buscar y filtrar"}
+              </Text>
+            </Pressable>
+
+            {hasActiveFilters ? (
               <Pressable
-                accessibilityLabel="Limpiar búsqueda"
-                style={styles.clearSearchButton}
-                onPress={() => setSearchQuery("")}
+                accessibilityLabel="Limpiar filtros"
+                style={styles.activityClearButton}
+                onPress={resetFilters}
               >
-                <Ionicons name="close" size={17} color="#6B7280" />
+                <Ionicons name="close" size={17} color={primaryIconColor} />
               </Pressable>
             ) : null}
           </View>
-
-          <Pressable
-            accessibilityLabel="Abrir filtros"
-            style={[
-              styles.filterIconButton,
-              hasActiveFilters && styles.filterIconButtonActive,
-            ]}
-            onPress={() => setIsFiltersExpanded(true)}
-          >
-            <Ionicons
-              name="options-outline"
-              size={21}
-              color={hasActiveFilters ? "#FFFFFF" : primaryIconColor}
-            />
-            {hasActiveFilters ? <View style={styles.filterBadgeDot} /> : null}
-          </Pressable>
         </View>
-
-        {hasActiveFilters ? (
-          <View style={styles.activeFiltersSummary}>
-            <Text style={styles.activeFiltersSummaryText} numberOfLines={1}>
-              {filtersTriggerSubtitle}
-            </Text>
-            <Pressable
-              accessibilityLabel="Limpiar filtros"
-              hitSlop={8}
-              onPress={resetFilters}
-            >
-              <Text style={styles.activeFiltersClearText}>Limpiar</Text>
-            </Pressable>
-          </View>
-        ) : null}
-
-        {hasSearchText ? (
-          <View style={styles.upcomingPanel}>
-            <View style={styles.overviewHeader}>
-              <View style={styles.upcomingHeaderText}>
-                <Text style={styles.sectionLabel}>Resultados</Text>
-                <Text style={styles.upcomingSubtitle} numberOfLines={2}>
-                  {searchScopeLabel} · {activeViewFilterLabel}
-                </Text>
-              </View>
-            </View>
-
-            {listResults.length === 0 ? (
-              <AgendaEmptyState
-                actionIcon="close-circle-outline"
-                actionLabel="Limpiar búsqueda"
-                compact
-                icon="search-outline"
-                onAction={() => setSearchQuery("")}
-                text="No he encontrado ningún plan con ese texto y esos filtros."
-                title="Sin coincidencias"
-              />
-            ) : (
-              <View style={styles.upcomingList}>
-                {listResults.map(({ event, occurrenceDate }) => (
-                  <SwipeableEventRow
-                    key={`${event.id}-${toDateKey(occurrenceDate)}-search`}
-                    completed={event.completed}
-                    onComplete={() => {
-                      void toggleEventCompleted(event.id);
-                    }}
-                    onDelete={() => {
-                      requestDeleteEvent(event.id);
-                    }}
-                  >
-                    <View
-                      style={[
-                        styles.upcomingItem,
-                        event.completed && styles.upcomingItemCompleted,
-                        !event.completed &&
-                          isSoonReminderState(
-                            getReminderVisualInfo(
-                              event,
-                              occurrenceDate,
-                              currentTime,
-                            ).state,
-                          ) &&
-                          styles.upcomingItemReminderSoon,
-                        !event.completed &&
-                          isCriticalReminderState(
-                            getReminderVisualInfo(
-                              event,
-                              occurrenceDate,
-                              currentTime,
-                            ).state,
-                          ) &&
-                          styles.upcomingItemReminderCritical,
-                      ]}
-                    >
-                      <Pressable
-                        style={styles.upcomingItemMain}
-                        onPress={() => openEventDetail(event, occurrenceDate)}
-                      >
-                        <View
-                          style={[
-                            styles.compactIconDot,
-                            {
-                              backgroundColor: event.completed
-                                ? "#9CA3AF"
-                                : event.color,
-                            },
-                          ]}
-                        >
-                          <Ionicons
-                            name={getCategoryForEvent(event).icon}
-                            size={11}
-                            color="#FFFFFF"
-                          />
-                        </View>
-                        <View style={styles.upcomingItemBody}>
-                          <Text
-                            style={[
-                              styles.upcomingItemTitle,
-                              event.completed && styles.completedText,
-                            ]}
-                            numberOfLines={1}
-                          >
-                            {event.title}
-                          </Text>
-                          <Text style={styles.upcomingItemMeta} numberOfLines={1}>
-                            {UPCOMING_DATE_FORMATTER.format(occurrenceDate)} ·{" "}
-                            {event.startTime}
-                            {event.location ? ` · ${event.location}` : ""}
-                            {getTasksForEvent(event.id).length > 0
-                              ? ` · ${getEventTaskStatsLabel(
-                                  getTasksForEvent(event.id),
-                                )}`
-                              : ""}
-                          </Text>
-                        </View>
-                        <ReminderBadge
-                          currentTime={currentTime}
-                          event={event}
-                          occurrenceDate={occurrenceDate}
-                        />
-                        <Ionicons
-                          name="chevron-forward"
-                          size={18}
-                          color="#9CA3AF"
-                        />
-                      </Pressable>
-                    </View>
-                  </SwipeableEventRow>
-                ))}
-              </View>
-            )}
-          </View>
-        ) : null}
 
         <View style={styles.upcomingPanel}>
           <View style={styles.overviewHeader}>
             <View style={styles.upcomingHeaderText}>
               <Text style={styles.sectionLabel}>Próximos</Text>
               <Text style={styles.upcomingSubtitle} numberOfLines={2}>
-                Siguientes {UPCOMING_WINDOW_DAYS} días · todos los planes
+                Siguientes {UPCOMING_WINDOW_DAYS} días · vista compacta
               </Text>
             </View>
+            {upcomingEvents.length > 3 ? (
+              <Pressable
+                style={styles.upcomingSeeAllButton}
+                onPress={() => openSearchPanel("all")}
+              >
+                <Text style={styles.upcomingSeeAllText}>Ver todos</Text>
+                <Ionicons name="arrow-forward" size={15} color="#4D74B8" />
+              </Pressable>
+            ) : null}
           </View>
 
           {upcomingEvents.length === 0 ? (
@@ -5149,7 +5215,7 @@ export default function HomeScreen() {
             />
           ) : (
             <View style={styles.upcomingList}>
-              {upcomingEvents.map(({ event, occurrenceDate }) => (
+              {upcomingPreviewEvents.map(({ event, occurrenceDate }) => (
                 <SwipeableEventRow
                   key={`${event.id}-${toDateKey(occurrenceDate)}`}
                   completed={event.completed}
@@ -5239,6 +5305,18 @@ export default function HomeScreen() {
                   </View>
                 </SwipeableEventRow>
               ))}
+              {upcomingExtraCount > 0 ? (
+                <Pressable
+                  style={styles.upcomingMoreButton}
+                  onPress={() => openSearchPanel("all")}
+                >
+                  <Text style={styles.upcomingMoreText}>
+                    +{upcomingExtraCount}{" "}
+                    {upcomingExtraCount === 1 ? "plan más" : "planes más"}
+                  </Text>
+                  <Ionicons name="options-outline" size={16} color="#4D74B8" />
+                </Pressable>
+              ) : null}
             </View>
           )}
         </View>
@@ -5894,126 +5972,230 @@ export default function HomeScreen() {
           >
             <View style={styles.filtersSheetHeader}>
               <View>
-                <Text style={styles.sectionLabel}>Filtros</Text>
-                <Text style={styles.filtersSheetTitle}>Ajusta tu agenda</Text>
+                <Text style={styles.sectionLabel}>Buscar</Text>
+                <Text style={styles.filtersSheetTitle}>Encuentra tus planes</Text>
                 <Text style={styles.filtersSheetSubtitle} numberOfLines={2}>
-                  Mantén la pantalla limpia y usa estos filtros solo cuando los necesites.
+                  Usa texto, fecha, estado y categoría sin cargar la pantalla principal.
                 </Text>
               </View>
             </View>
 
-            <Text style={styles.filtersExpandedSectionLabel}>Fecha</Text>
-            <View style={styles.filtersExpandedScopeRow}>
-              {SEARCH_SCOPES.map((scope) => {
-                const isSelected = searchScope === scope.value;
-
-                return (
-                  <Pressable
-                    key={scope.value}
-                    style={[
-                      styles.searchScopeButton,
-                      isSelected && styles.searchScopeButtonSelected,
-                    ]}
-                    onPress={() => setSearchScope(scope.value)}
-                  >
-                    <Text
-                      style={[
-                        styles.searchScopeText,
-                        isSelected && styles.searchScopeTextSelected,
-                      ]}
-                    >
-                      {scope.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            <Text style={styles.filtersExpandedSectionLabel}>Estado</Text>
-            <View style={styles.statusFilterRow}>
-              {STATUS_FILTERS.map((filter) => {
-                const isSelected = activeStatusFilter === filter.value;
-
-                return (
-                  <Pressable
-                    key={filter.value}
-                    style={[
-                      styles.statusFilterButton,
-                      isSelected && styles.statusFilterButtonSelected,
-                    ]}
-                    onPress={() => setActiveStatusFilter(filter.value)}
-                  >
-                    <Text
-                      style={[
-                        styles.statusFilterText,
-                        isSelected && styles.statusFilterTextSelected,
-                      ]}
-                    >
-                      {filter.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            <Text style={styles.filtersExpandedSectionLabel}>Categoría</Text>
-            <View style={styles.filtersCategoryGrid}>
-              <Pressable
-                style={[
-                  styles.filtersCategoryOption,
-                  activeCategoryFilter === "all" && styles.filtersCategoryOptionSelected,
-                ]}
-                onPress={() => setActiveCategoryFilter("all")}
-              >
-                <Ionicons
-                  name="albums-outline"
-                  size={17}
-                  color={activeCategoryFilter === "all" ? "#FFFFFF" : "#374151"}
+            <ScrollView
+              contentContainerStyle={styles.filtersSheetScrollContent}
+              showsVerticalScrollIndicator={false}
+              style={styles.filtersSheetScroll}
+            >
+              <Text style={styles.filtersExpandedSectionLabel}>Texto</Text>
+              <View style={styles.filtersExpandedSearch}>
+                <Ionicons name="search-outline" size={19} color="#6B7280" />
+                <TextInput
+                  autoCapitalize="none"
+                  onChangeText={setSearchQuery}
+                  placeholder="Título, notas, lugar, tarea..."
+                  placeholderTextColor="#9CA3AF"
+                  style={styles.searchInput}
+                  value={searchQuery}
                 />
-                <Text
-                  style={[
-                    styles.filtersCategoryOptionText,
-                    activeCategoryFilter === "all" && styles.filtersCategoryOptionTextSelected,
-                  ]}
-                >
-                  Todas
-                </Text>
-              </Pressable>
-
-              {categories.map((category) => {
-                const isSelected = activeCategoryFilter === category.id;
-
-                return (
+                {searchQuery ? (
                   <Pressable
-                    key={category.id}
-                    style={[
-                      styles.filtersCategoryOption,
-                      isSelected && styles.filtersCategoryOptionSelected,
-                      isSelected && {
-                        backgroundColor: category.color,
-                        borderColor: category.color,
-                      },
-                    ]}
-                    onPress={() => setActiveCategoryFilter(category.id)}
+                    accessibilityLabel="Limpiar búsqueda"
+                    style={styles.clearSearchButton}
+                    onPress={() => setSearchQuery("")}
                   >
-                    <Ionicons
-                      name={category.icon}
-                      size={17}
-                      color={isSelected ? "#FFFFFF" : category.color}
-                    />
-                    <Text
-                      style={[
-                        styles.filtersCategoryOptionText,
-                        isSelected && styles.filtersCategoryOptionTextSelected,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {category.label}
-                    </Text>
+                    <Ionicons name="close" size={17} color="#6B7280" />
                   </Pressable>
-                );
-              })}
-            </View>
+                ) : null}
+              </View>
+
+              <Text style={styles.filtersExpandedSectionLabel}>Fecha</Text>
+              <View style={styles.filtersExpandedScopeRow}>
+                {SEARCH_SCOPES.map((scope) => {
+                  const isSelected = searchScope === scope.value;
+
+                  return (
+                    <Pressable
+                      key={scope.value}
+                      style={[
+                        styles.searchScopeButton,
+                        isSelected && styles.searchScopeButtonSelected,
+                      ]}
+                      onPress={() => setSearchScope(scope.value)}
+                    >
+                      <Text
+                        style={[
+                          styles.searchScopeText,
+                          isSelected && styles.searchScopeTextSelected,
+                        ]}
+                      >
+                        {scope.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text style={styles.filtersExpandedSectionLabel}>Estado</Text>
+              <View style={styles.statusFilterRow}>
+                {STATUS_FILTERS.map((filter) => {
+                  const isSelected = activeStatusFilter === filter.value;
+
+                  return (
+                    <Pressable
+                      key={filter.value}
+                      style={[
+                        styles.statusFilterButton,
+                        isSelected && styles.statusFilterButtonSelected,
+                      ]}
+                      onPress={() => setActiveStatusFilter(filter.value)}
+                    >
+                      <Text
+                        style={[
+                          styles.statusFilterText,
+                          isSelected && styles.statusFilterTextSelected,
+                        ]}
+                      >
+                        {filter.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text style={styles.filtersExpandedSectionLabel}>Categoría</Text>
+              <View style={styles.filtersCategoryGrid}>
+                <Pressable
+                  style={[
+                    styles.filtersCategoryOption,
+                    activeCategoryFilter === "all" && styles.filtersCategoryOptionSelected,
+                  ]}
+                  onPress={() => setActiveCategoryFilter("all")}
+                >
+                  <Ionicons
+                    name="albums-outline"
+                    size={17}
+                    color={activeCategoryFilter === "all" ? "#FFFFFF" : "#374151"}
+                  />
+                  <Text
+                    style={[
+                      styles.filtersCategoryOptionText,
+                      activeCategoryFilter === "all" && styles.filtersCategoryOptionTextSelected,
+                    ]}
+                  >
+                    Todas
+                  </Text>
+                </Pressable>
+
+                {categories.map((category) => {
+                  const isSelected = activeCategoryFilter === category.id;
+
+                  return (
+                    <Pressable
+                      key={category.id}
+                      style={[
+                        styles.filtersCategoryOption,
+                        isSelected && styles.filtersCategoryOptionSelected,
+                        isSelected && {
+                          backgroundColor: category.color,
+                          borderColor: category.color,
+                        },
+                      ]}
+                      onPress={() => setActiveCategoryFilter(category.id)}
+                    >
+                      <Ionicons
+                        name={category.icon}
+                        size={17}
+                        color={isSelected ? "#FFFFFF" : category.color}
+                      />
+                      <Text
+                        style={[
+                          styles.filtersCategoryOptionText,
+                          isSelected && styles.filtersCategoryOptionTextSelected,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {category.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <View style={styles.filtersResultsHeader}>
+                <View style={styles.filtersResultsTitleBlock}>
+                  <Text style={styles.filtersExpandedSectionLabel}>
+                    Resultados
+                  </Text>
+                  <Text style={styles.filtersResultsSubtitle}>
+                    {searchScopeLabel} · {activeViewFilterLabel}
+                  </Text>
+                </View>
+                <Text style={styles.filtersResultsCount}>
+                  {listResults.length}
+                </Text>
+              </View>
+
+              {listResults.length === 0 ? (
+                <View style={styles.filtersEmptyResults}>
+                  <Ionicons
+                    name={hasSearchText ? "search-outline" : "calendar-outline"}
+                    size={22}
+                    color="#6B7280"
+                  />
+                  <Text style={styles.filtersEmptyResultsText}>
+                    {hasSearchText
+                      ? "No hay planes que coincidan con esa búsqueda."
+                      : "No hay planes en este alcance con los filtros activos."}
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.filtersResultsList}>
+                  {listResults.map(({ event, occurrenceDate }) => (
+                    <Pressable
+                      key={`${event.id}-${toDateKey(occurrenceDate)}-filters`}
+                      style={styles.filtersResultItem}
+                      onPress={() => {
+                        setIsFiltersExpanded(false);
+                        openEventDetail(event, occurrenceDate);
+                      }}
+                    >
+                      <View
+                        style={[
+                          styles.compactIconDot,
+                          {
+                            backgroundColor: event.completed
+                              ? "#9CA3AF"
+                              : event.color,
+                          },
+                        ]}
+                      >
+                        <Ionicons
+                          name={getCategoryForEvent(event).icon}
+                          size={11}
+                          color="#FFFFFF"
+                        />
+                      </View>
+                      <View style={styles.filtersResultBody}>
+                        <Text
+                          style={[
+                            styles.filtersResultTitle,
+                            event.completed && styles.completedText,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {event.title}
+                        </Text>
+                        <Text style={styles.filtersResultMeta} numberOfLines={1}>
+                          {UPCOMING_DATE_FORMATTER.format(occurrenceDate)} ·{" "}
+                          {event.startTime}
+                          {event.location ? ` · ${event.location}` : ""}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={17} color="#9CA3AF" />
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+            </ScrollView>
 
             <View style={styles.filtersSheetActions}>
               <Pressable
@@ -6308,136 +6490,139 @@ export default function HomeScreen() {
                       }}
                     >
                       <View
-                      style={[
-                        styles.eventCard,
-                        { backgroundColor: isDark ? "#1E293B" : event.tone },
-                        event.completed && styles.eventCardCompleted,
-                      ]}
-                    >
-                      <View
                         style={[
-                          styles.eventAccent,
-                          {
-                            backgroundColor: event.completed
-                              ? "#9CA3AF"
-                              : event.color,
-                          },
+                          styles.eventCard,
+                          { backgroundColor: isDark ? "#1E293B" : event.tone },
+                          event.completed && styles.eventCardCompleted,
                         ]}
-                      />
-                      <View style={styles.eventCardMain}>
-                        <Pressable
-                          style={styles.eventCardPressable}
-                          onPress={() =>
-                            openEventDetail(
-                              event,
-                              getOccurrenceStartForDate(event, selectedDay.date),
-                            )
-                          }
-                        >
-                          <View style={styles.eventBody}>
-                            <View style={styles.eventTopRow}>
-                              <Text style={styles.eventTime}>
-                                {event.startTime}
-                              </Text>
-                              <View style={styles.categoryPill}>
-                                <Ionicons
-                                  name={getCategoryForEvent(event).icon}
-                                  size={13}
-                                  color={event.color}
-                                />
-                                <Text
-                                  style={[
-                                    styles.categoryText,
-                                    { color: event.color },
-                                  ]}
-                                >
-                                  {getCategoryForEvent(event).label}
-                                </Text>
-                              </View>
-                            </View>
-                            <View style={styles.eventTitleRow}>
-                              <View
-                                style={[
-                                  styles.eventIconBadge,
-                                  { backgroundColor: event.color },
-                                ]}
-                              >
-                                <Ionicons
-                                  name={getCategoryForEvent(event).icon}
-                                  size={17}
-                                  color="#FFFFFF"
-                                />
-                              </View>
-                              <Text
-                                style={[
-                                  styles.eventTitle,
-                                  event.completed && styles.completedText,
-                                ]}
-                              >
-                                {event.title}
-                              </Text>
-                              <Ionicons
-                                name="create-outline"
-                                size={18}
-                                color="#4B5563"
-                              />
-                            </View>
-                            {event.location ? (
-                              <View style={styles.eventLocationRow}>
-                                <Ionicons
-                                  name="location-outline"
-                                  size={14}
-                                  color={event.color}
-                                />
-                                <Text
-                                  style={[
-                                    styles.eventLocationText,
-                                    { color: event.color },
-                                  ]}
-                                >
-                                  {event.location}
-                                </Text>
-                              </View>
-                            ) : null}
-                            <Text style={styles.eventDescription}>
-                              {event.description}
-                            </Text>
-                            <View style={styles.dayDetailPills}>
-                              <ReminderBadge
-                                currentTime={currentTime}
-                                event={event}
-                                occurrenceDate={getOccurrenceStartForDate(
+                      >
+                        <View
+                          style={[
+                            styles.eventAccent,
+                            {
+                              backgroundColor: event.completed
+                                ? "#9CA3AF"
+                                : event.color,
+                            },
+                          ]}
+                        />
+                        <View style={styles.eventCardMain}>
+                          <Pressable
+                            style={styles.eventCardPressable}
+                            onPress={() =>
+                              openEventDetail(
+                                event,
+                                getOccurrenceStartForDate(
                                   event,
                                   selectedDay.date,
-                                )}
-                                variant="inline"
-                              />
-                              <EventTaskPill
-                                color={event.color}
-                                tasks={getTasksForEvent(event.id)}
-                                variant="inline"
-                              />
-                              {event.recurrence !== "none" ? (
-                                <View style={styles.recurrencePill}>
+                                ),
+                              )
+                            }
+                          >
+                            <View style={styles.eventBody}>
+                              <View style={styles.eventTopRow}>
+                                <Text style={styles.eventTime}>
+                                  {event.startTime}
+                                </Text>
+                                <View style={styles.categoryPill}>
                                   <Ionicons
-                                    name="repeat-outline"
+                                    name={getCategoryForEvent(event).icon}
                                     size={13}
                                     color={event.color}
                                   />
                                   <Text
                                     style={[
-                                      styles.recurrenceText,
+                                      styles.categoryText,
                                       { color: event.color },
                                     ]}
                                   >
-                                    {getRecurrenceSummaryLabel(event)}
+                                    {getCategoryForEvent(event).label}
+                                  </Text>
+                                </View>
+                              </View>
+                              <View style={styles.eventTitleRow}>
+                                <View
+                                  style={[
+                                    styles.eventIconBadge,
+                                    { backgroundColor: event.color },
+                                  ]}
+                                >
+                                  <Ionicons
+                                    name={getCategoryForEvent(event).icon}
+                                    size={17}
+                                    color="#FFFFFF"
+                                  />
+                                </View>
+                                <Text
+                                  style={[
+                                    styles.eventTitle,
+                                    event.completed && styles.completedText,
+                                  ]}
+                                >
+                                  {event.title}
+                                </Text>
+                                <Ionicons
+                                  name="create-outline"
+                                  size={18}
+                                  color="#4B5563"
+                                />
+                              </View>
+                              {event.location ? (
+                                <View style={styles.eventLocationRow}>
+                                  <Ionicons
+                                    name="location-outline"
+                                    size={14}
+                                    color={event.color}
+                                  />
+                                  <Text
+                                    style={[
+                                      styles.eventLocationText,
+                                      { color: event.color },
+                                    ]}
+                                  >
+                                    {event.location}
                                   </Text>
                                 </View>
                               ) : null}
+                              <Text style={styles.eventDescription}>
+                                {event.description}
+                              </Text>
+                              <View style={styles.dayDetailPills}>
+                                <ReminderBadge
+                                  currentTime={currentTime}
+                                  event={event}
+                                  occurrenceDate={getOccurrenceStartForDate(
+                                    event,
+                                    selectedDay.date,
+                                  )}
+                                  variant="inline"
+                                />
+                                <EventTaskPill
+                                  color={event.color}
+                                  tasks={getTasksForEvent(event.id)}
+                                  variant="inline"
+                                />
+                                {event.recurrence !== "none" ? (
+                                  <View style={styles.recurrencePill}>
+                                    <Ionicons
+                                      name="repeat-outline"
+                                      size={13}
+                                      color={event.color}
+                                    />
+                                    <Text
+                                      style={[
+                                        styles.recurrenceText,
+                                        { color: event.color },
+                                      ]}
+                                    >
+                                      {getRecurrenceSummaryLabel(event)}
+                                    </Text>
+                                  </View>
+                                ) : null}
+                              </View>
                             </View>
-                          </View>
-                        </Pressable>
-                      </View>
+                          </Pressable>
+                        </View>
                       </View>
                     </SwipeableEventRow>
                   ))}
@@ -6449,13 +6634,13 @@ export default function HomeScreen() {
       </Modal>
 
       <Modal
-        animationType="none"
+        animationType="fade"
         onRequestClose={closeEventDetail}
         transparent
         visible={isEventDetailVisible}
       >
         <Animated.View
-          style={[styles.modalOverlay, { opacity: eventDetailOverlayOpacity }]}
+          style={[styles.modalOverlay, { opacity: eventDetailFadeOpacity }]}
         >
           <Pressable style={styles.modalBackdrop} onPress={closeEventDetail} />
           <DraggableBottomSheet
@@ -6688,7 +6873,22 @@ export default function HomeScreen() {
                   </Pressable>
 
                   <Pressable
-                    style={styles.eventDetailDeleteAction}
+                    accessibilityLabel="Duplicar evento"
+                    style={[
+                      styles.eventDetailIconAction,
+                      styles.eventDetailDuplicateAction,
+                    ]}
+                    onPress={duplicateSelectedDetailEvent}
+                  >
+                    <Ionicons name="copy-outline" size={20} color="#4D74B8" />
+                  </Pressable>
+
+                  <Pressable
+                    accessibilityLabel="Borrar evento"
+                    style={[
+                      styles.eventDetailIconAction,
+                      styles.eventDetailDeleteAction,
+                    ]}
                     onPress={deleteSelectedDetailEvent}
                   >
                     <Ionicons name="trash-outline" size={20} color="#B42318" />
@@ -6751,7 +6951,7 @@ export default function HomeScreen() {
         >
           <Pressable style={styles.modalBackdrop} onPress={closeEventModal} />
           <DraggableBottomSheet
-            onClose={closeEventModal}
+            onClose={finishCloseEventModal}
             style={styles.modalCard}
           >
             <View style={styles.modalHeader}>
@@ -7857,15 +8057,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "900",
   },
-  eventDetailDeleteAction: {
+  eventDetailIconAction: {
     alignItems: "center",
-    backgroundColor: "#FFF4F2",
-    borderColor: "#FFD9D4",
     borderRadius: 18,
     borderWidth: 1,
     height: 52,
     justifyContent: "center",
     width: 52,
+  },
+  eventDetailDuplicateAction: {
+    backgroundColor: "#EAF0FB",
+    borderColor: "#D8E3F7",
+  },
+  eventDetailDeleteAction: {
+    backgroundColor: "#FFF4F2",
+    borderColor: "#FFD9D4",
   },
   safeArea: {
     flex: 1,
@@ -7873,7 +8079,7 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: 18,
-    paddingBottom: 112,
+    paddingBottom: 84,
     paddingTop: 18,
   },
   header: {
@@ -8309,6 +8515,186 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     height: "100%",
   },
+  activityPanel: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E5E7EB",
+    borderRadius: 24,
+    borderWidth: 1,
+    marginTop: 14,
+    padding: 16,
+    shadowColor: "#111827",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.06,
+    shadowRadius: 22,
+    elevation: 3,
+  },
+  activityHeader: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between",
+  },
+  activityHeaderText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  activityTitle: {
+    color: "#111827",
+    fontSize: 20,
+    fontWeight: "900",
+    letterSpacing: -0.2,
+    marginTop: 3,
+  },
+  activitySubtitle: {
+    color: "#6B7280",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 3,
+  },
+  activityMonthBadge: {
+    alignItems: "center",
+    backgroundColor: "#F9F7F3",
+    borderColor: "#E8DFD3",
+    borderRadius: 16,
+    borderWidth: 1,
+    minWidth: 58,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  activityMonthValue: {
+    color: "#172033",
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  activityMonthLabel: {
+    color: "#6B7280",
+    fontSize: 10,
+    fontWeight: "900",
+    marginTop: 1,
+    textTransform: "uppercase",
+  },
+  activityStatsGrid: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 14,
+  },
+  activityStatCard: {
+    backgroundColor: "#F9FAFB",
+    borderColor: "#E5E7EB",
+    borderRadius: 16,
+    borderWidth: 1,
+    flex: 1,
+    minHeight: 90,
+    paddingHorizontal: 10,
+    paddingVertical: 11,
+  },
+  activityStatValue: {
+    color: "#172033",
+    fontSize: 15,
+    fontWeight: "900",
+    marginTop: 8,
+  },
+  activityStatLabel: {
+    color: "#6B7280",
+    fontSize: 11,
+    fontWeight: "800",
+    marginTop: 2,
+    textTransform: "uppercase",
+  },
+  activityBarsRow: {
+    alignItems: "flex-end",
+    backgroundColor: "#F9F7F3",
+    borderColor: "#EFE7DC",
+    borderRadius: 18,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 9,
+    justifyContent: "space-between",
+    marginTop: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  activityBarItem: {
+    alignItems: "center",
+    flex: 1,
+  },
+  activityBarTrack: {
+    alignItems: "center",
+    backgroundColor: "#EEE8DF",
+    borderRadius: 999,
+    height: 58,
+    justifyContent: "flex-end",
+    overflow: "hidden",
+    width: 12,
+  },
+  activityBarFill: {
+    borderRadius: 999,
+    width: "100%",
+  },
+  activityBarLabel: {
+    color: "#6B7280",
+    fontSize: 10,
+    fontWeight: "900",
+    marginTop: 6,
+  },
+  activityBarCount: {
+    color: "#172033",
+    fontSize: 11,
+    fontWeight: "900",
+    marginTop: 1,
+  },
+  activityInsightBox: {
+    alignItems: "flex-start",
+    backgroundColor: "#FFF9ED",
+    borderColor: "#F4DFB8",
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  activityInsightText: {
+    color: "#624514",
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 18,
+  },
+  activityActionsRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 12,
+  },
+  activitySearchButton: {
+    alignItems: "center",
+    backgroundColor: "#1F2A37",
+    borderRadius: 16,
+    flex: 1,
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "center",
+    minHeight: 46,
+    paddingHorizontal: 13,
+  },
+  activitySearchButtonText: {
+    color: "#FFFFFF",
+    flexShrink: 1,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  activityClearButton: {
+    alignItems: "center",
+    backgroundColor: "#F7F5F0",
+    borderColor: "#E8DFD3",
+    borderRadius: 16,
+    borderWidth: 1,
+    height: 46,
+    justifyContent: "center",
+    width: 46,
+  },
   categoryStatsPanel: {
     backgroundColor: "#FFFFFF",
     borderColor: "#ECE3D8",
@@ -8714,6 +9100,23 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  upcomingSeeAllButton: {
+    alignItems: "center",
+    backgroundColor: "#EAF0FB",
+    borderColor: "#D8E3F7",
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: "row",
+    flexShrink: 0,
+    gap: 5,
+    minHeight: 36,
+    paddingHorizontal: 10,
+  },
+  upcomingSeeAllText: {
+    color: "#4D74B8",
+    fontSize: 12,
+    fontWeight: "900",
+  },
   todaySmallButton: {
     alignItems: "center",
     backgroundColor: "#F7F5F0",
@@ -8735,6 +9138,23 @@ const styles = StyleSheet.create({
   upcomingList: {
     gap: 8,
     marginTop: 12,
+  },
+  upcomingMoreButton: {
+    alignItems: "center",
+    backgroundColor: "#F7F5F0",
+    borderColor: "#E8DFD3",
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 7,
+    justifyContent: "center",
+    minHeight: 44,
+    paddingHorizontal: 12,
+  },
+  upcomingMoreText: {
+    color: "#4D74B8",
+    fontSize: 13,
+    fontWeight: "900",
   },
   swipeRow: {
     borderRadius: 8,
@@ -10873,6 +11293,13 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     marginTop: 5,
   },
+  filtersSheetScroll: {
+    flexShrink: 1,
+    maxHeight: 520,
+  },
+  filtersSheetScrollContent: {
+    paddingBottom: 4,
+  },
   filtersCategoryGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -10902,6 +11329,77 @@ const styles = StyleSheet.create({
   },
   filtersCategoryOptionTextSelected: {
     color: "#FFFFFF",
+  },
+  filtersResultsHeader: {
+    alignItems: "flex-end",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 12,
+    marginTop: 8,
+  },
+  filtersResultsTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  filtersResultsSubtitle: {
+    color: "#6B7280",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: -2,
+  },
+  filtersResultsCount: {
+    color: "#1F2A37",
+    fontSize: 22,
+    fontWeight: "900",
+    marginBottom: 2,
+  },
+  filtersEmptyResults: {
+    alignItems: "center",
+    backgroundColor: "#F9F7F3",
+    borderColor: "#EFE7DC",
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 7,
+    marginTop: 10,
+    padding: 14,
+  },
+  filtersEmptyResultsText: {
+    color: "#6B7280",
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 18,
+    textAlign: "center",
+  },
+  filtersResultsList: {
+    gap: 8,
+    marginTop: 10,
+  },
+  filtersResultItem: {
+    alignItems: "center",
+    backgroundColor: "#F9F7F3",
+    borderColor: "#EFE7DC",
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 10,
+    minHeight: 58,
+    paddingHorizontal: 12,
+  },
+  filtersResultBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  filtersResultTitle: {
+    color: "#111827",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  filtersResultMeta: {
+    color: "#6B7280",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 2,
+    textTransform: "capitalize",
   },
   filtersSheetActions: {
     backgroundColor: "#FFFFFF",
@@ -11091,6 +11589,7 @@ function getDarkStyleColor(propertyName: string, color: string) {
       [
         "#4B5563",
         "#6B7280",
+        "#624514",
         "#7C6250",
         "#8A6F5A",
         "#8A7565",

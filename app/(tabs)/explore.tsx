@@ -564,10 +564,34 @@ export default function SettingsScreen() {
   );
   const [categoryForm, setCategoryForm] = useState(createEmptyCategoryForm);
   const [categoryError, setCategoryError] = useState("");
-  const [, setSyncStatus] = useState("Cargando...");
+  const [syncStatus, setSyncStatus] = useState("Cargando...");
   const [isLoading, setIsLoading] = useState(true);
 
   const userId = session?.user.id;
+  const userEmail = session?.user.email ?? "Sin sesión";
+  const syncState = syncStatus === "Sincronizado"
+    ? "online"
+    : syncStatus === "Modo local"
+      ? "local"
+      : "syncing";
+  const syncIcon: CategoryIcon =
+    syncState === "online"
+      ? "cloud-done-outline"
+      : syncState === "local"
+        ? "cloud-offline-outline"
+        : "sync-outline";
+  const syncColor =
+    syncState === "online"
+      ? "#3D8B7D"
+      : syncState === "local"
+        ? "#D28A2E"
+        : "#4D74B8";
+  const themeLabel =
+    preference === "system"
+      ? "Sistema"
+      : resolvedTheme === "dark"
+        ? "Oscuro"
+        : "Claro";
   const selectedCategory = useMemo(
     () =>
       editingCategoryId
@@ -588,6 +612,11 @@ export default function SettingsScreen() {
   const assignedEventCount = events.filter(
     (event) => event.category && event.category !== "all",
   ).length;
+  const localDataSummary = `${events.length} ${
+    events.length === 1 ? "evento" : "eventos"
+  } · ${categories.length} ${
+    categories.length === 1 ? "categoría" : "categorías"
+  }`;
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -864,6 +893,40 @@ export default function SettingsScreen() {
     ]);
   }
 
+  async function refreshSettings() {
+    await loadSettings(userId);
+  }
+
+  async function signOut() {
+    setIsLoading(true);
+    await supabase.auth.signOut();
+    setSession(null);
+    setSyncStatus("Modo local");
+    setEvents([]);
+    setCategories(createDefaultCategories());
+    setIsLoading(false);
+  }
+
+  function confirmSignOut() {
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      if (window.confirm("¿Cerrar sesión en esta agenda?")) {
+        void signOut();
+      }
+      return;
+    }
+
+    Alert.alert("Cerrar sesión", "¿Quieres cerrar sesión en esta agenda?", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "Cerrar sesión",
+        style: "destructive",
+        onPress: () => {
+          void signOut();
+        },
+      },
+    ]);
+  }
+
   if (!hasLoadedSession) {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -893,6 +956,70 @@ export default function SettingsScreen() {
             ? "Gestiona la apariencia, las categorías y las opciones que hacen que la agenda se adapte a tu forma de usarla."
             : "Gestiona la apariencia de la app. Las categorías se desbloquean al iniciar sesión."}
         </Text>
+
+        <View style={styles.accountPanel}>
+          <View style={styles.accountHeader}>
+            <View style={styles.accountIcon}>
+              <Ionicons
+                name={session ? "person-circle-outline" : "lock-closed-outline"}
+                size={28}
+                color={primaryIconColor}
+              />
+            </View>
+            <View style={styles.accountTitleBlock}>
+              <Text style={styles.sectionLabel}>Cuenta</Text>
+              <Text style={styles.accountTitle} numberOfLines={1}>
+                {session ? userEmail : "Sesión no iniciada"}
+              </Text>
+              <Text style={styles.accountText} numberOfLines={2}>
+                {session
+                  ? "Tus categorías y eventos se sincronizan con Supabase."
+                  : "Inicia sesión desde Inicio para activar categorías privadas y sincronización."}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.accountMetaGrid}>
+            <View style={styles.accountMetaItem}>
+              <Ionicons name={syncIcon} size={18} color={syncColor} />
+              <Text style={styles.accountMetaLabel}>Sincronización</Text>
+              <Text style={styles.accountMetaValue} numberOfLines={1}>
+                {syncStatus}
+              </Text>
+            </View>
+            <View style={styles.accountMetaItem}>
+              <Ionicons name="phone-portrait-outline" size={18} color="#4D74B8" />
+              <Text style={styles.accountMetaLabel}>Copia local</Text>
+              <Text style={styles.accountMetaValue} numberOfLines={1}>
+                {session ? localDataSummary : "Bloqueada"}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.accountActions}>
+            <Pressable
+              disabled={isLoading}
+              style={[styles.ghostButton, isLoading && styles.disabledButton]}
+              onPress={() => {
+                void refreshSettings();
+              }}
+            >
+              <Ionicons name="refresh-outline" size={17} color={primaryIconColor} />
+              <Text style={styles.ghostButtonText}>Recargar</Text>
+            </Pressable>
+
+            {session ? (
+              <Pressable
+                disabled={isLoading}
+                style={[styles.signOutButton, isLoading && styles.disabledButton]}
+                onPress={confirmSignOut}
+              >
+                <Ionicons name="log-out-outline" size={17} color="#B42318" />
+                <Text style={styles.signOutButtonText}>Cerrar sesión</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
 
         <View style={styles.panel}>
           <View style={styles.panelHeader}>
@@ -955,6 +1082,24 @@ export default function SettingsScreen() {
 
         {session ? (
           <>
+        <View style={styles.dataPanel}>
+          <View style={styles.panelHeader}>
+            <View>
+              <Text style={styles.sectionLabel}>Datos</Text>
+              <Text style={styles.panelTitle}>Estado de la agenda</Text>
+            </View>
+            <View
+              style={[
+                styles.syncBadge,
+                syncState === "online" && styles.syncBadgeOnline,
+                syncState === "local" && styles.syncBadgeLocal,
+              ]}
+            >
+              <Ionicons name={syncIcon} size={16} color={syncColor} />
+              <Text style={styles.syncBadgeText}>{syncStatus}</Text>
+            </View>
+          </View>
+
         <View style={styles.summaryGrid}>
           <View style={styles.summaryCard}>
             <Text style={styles.summaryValue}>{categories.length}</Text>
@@ -964,6 +1109,13 @@ export default function SettingsScreen() {
             <Text style={styles.summaryValue}>{assignedEventCount}</Text>
             <Text style={styles.summaryLabel}>Eventos asignados</Text>
           </View>
+          <View style={styles.summaryCard}>
+            <Text style={styles.summaryValue} numberOfLines={1}>
+              {themeLabel}
+            </Text>
+            <Text style={styles.summaryLabel}>Tema activo</Text>
+          </View>
+        </View>
         </View>
 
         <View style={styles.panel}>
@@ -1261,6 +1413,115 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     marginTop: 12,
   },
+  accountPanel: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#ECE3D8",
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 18,
+    padding: 16,
+  },
+  accountHeader: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 12,
+  },
+  accountIcon: {
+    alignItems: "center",
+    backgroundColor: "#F7F3EC",
+    borderColor: "#E8DFD3",
+    borderRadius: 8,
+    borderWidth: 1,
+    height: 48,
+    justifyContent: "center",
+    width: 48,
+  },
+  accountTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  accountTitle: {
+    color: "#172033",
+    fontSize: 18,
+    fontWeight: "900",
+    marginTop: 3,
+  },
+  accountText: {
+    color: "#6B7280",
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 19,
+    marginTop: 4,
+  },
+  accountMetaGrid: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 14,
+  },
+  accountMetaItem: {
+    backgroundColor: "#FAF8F4",
+    borderColor: "#EFE7DC",
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    minHeight: 82,
+    padding: 12,
+  },
+  accountMetaLabel: {
+    color: "#6B7280",
+    fontSize: 11,
+    fontWeight: "900",
+    marginTop: 8,
+    textTransform: "uppercase",
+  },
+  accountMetaValue: {
+    color: "#172033",
+    fontSize: 13,
+    fontWeight: "900",
+    marginTop: 3,
+  },
+  accountActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 14,
+  },
+  ghostButton: {
+    alignItems: "center",
+    backgroundColor: "#F7F3EC",
+    borderColor: "#E8DFD3",
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    flexDirection: "row",
+    gap: 7,
+    justifyContent: "center",
+    minHeight: 44,
+  },
+  ghostButtonText: {
+    color: "#172033",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  signOutButton: {
+    alignItems: "center",
+    backgroundColor: "#FEF3F2",
+    borderColor: "#FECACA",
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    flexDirection: "row",
+    gap: 7,
+    justifyContent: "center",
+    minHeight: 44,
+  },
+  signOutButtonText: {
+    color: "#B42318",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  disabledButton: {
+    opacity: 0.62,
+  },
   syncBadge: {
     alignItems: "center",
     backgroundColor: "#EAF0FB",
@@ -1361,6 +1622,14 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
     marginTop: 4,
+  },
+  dataPanel: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#ECE3D8",
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 18,
+    padding: 16,
   },
   panel: {
     backgroundColor: "#FFFFFF",
