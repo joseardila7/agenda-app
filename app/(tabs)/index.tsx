@@ -156,9 +156,19 @@ type DayDropZone = {
   x: number;
   y: number;
 };
+type HourDropZone = {
+  height: number;
+  hour: number;
+  time: string;
+  width: number;
+  x: number;
+  y: number;
+};
 type QuickDragState = {
   eventId: string;
+  mode: "day" | "hour";
   targetIndex: number | null;
+  targetHour: number | null;
   x: number;
   y: number;
 };
@@ -166,6 +176,7 @@ type QuickDragState = {
 type SwipeableEventRowProps = {
   children: ReactNode;
   completed: boolean;
+  enabled?: boolean;
   onComplete: () => void;
   onDelete: () => void;
 };
@@ -175,6 +186,7 @@ type CompletionAnimatedRowProps = {
 };
 type QuickDraggableEventProps = {
   children: ReactNode;
+  dragEnabled?: boolean;
   event: AgendaEvent;
   isDragging: boolean;
   onDragCancel: () => void;
@@ -182,6 +194,7 @@ type QuickDraggableEventProps = {
   onDragMove: (pageX: number, pageY: number) => void;
   onDragStart: (event: AgendaEvent, pageX: number, pageY: number) => void;
   onOpen: () => void;
+  variant?: "compact" | "plain";
 };
 type ReminderVisualState =
   | "completed"
@@ -1708,6 +1721,7 @@ function CompletionAnimatedRow({
 function SwipeableEventRow({
   children,
   completed,
+  enabled = true,
   onComplete,
   onDelete,
 }: SwipeableEventRowProps) {
@@ -1749,6 +1763,16 @@ function SwipeableEventRow({
     </View>
   );
 
+  if (!enabled) {
+    return (
+      <View style={styles.swipeRow}>
+        <CompletionAnimatedRow completed={completed}>
+          {children}
+        </CompletionAnimatedRow>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.swipeRow}>
       <Swipeable
@@ -1771,6 +1795,7 @@ function SwipeableEventRow({
 
 function QuickDraggableEvent({
   children,
+  dragEnabled = true,
   event,
   isDragging,
   onDragCancel,
@@ -1778,6 +1803,7 @@ function QuickDraggableEvent({
   onDragMove,
   onDragStart,
   onOpen,
+  variant = "compact",
 }: QuickDraggableEventProps) {
   const styles = useAgendaStyles();
   const isDraggingRef = useRef(false);
@@ -1837,6 +1863,10 @@ function QuickDraggableEvent({
 
   const handleLongPress = useCallback(
     (gestureEvent: GestureResponderEvent) => {
+      if (!dragEnabled) {
+        return;
+      }
+
       const { pageX, pageY } = getTouchPosition(gestureEvent);
 
       isDraggingRef.current = true;
@@ -1844,7 +1874,7 @@ function QuickDraggableEvent({
       animateScale(1.04);
       onDragStart(event, pageX, pageY);
     },
-    [animateScale, event, getTouchPosition, onDragStart],
+    [animateScale, dragEnabled, event, getTouchPosition, onDragStart],
   );
 
   const handleTouchMove = useCallback(
@@ -1888,12 +1918,18 @@ function QuickDraggableEvent({
 
   return (
     <Pressable
-      accessibilityHint="Toca para editar. Mantén pulsado para moverlo a otro día."
+      accessibilityHint={
+        !dragEnabled
+          ? "Toca para abrir el detalle."
+          : variant === "plain"
+          ? "Toca para editar. Mantén pulsado para moverlo a otra hora."
+          : "Toca para editar. Mantén pulsado para moverlo a otro día."
+      }
       accessibilityLabel="Evento de vista rápida"
       accessibilityRole="button"
       delayLongPress={280}
       hitSlop={6}
-      onLongPress={handleLongPress}
+      onLongPress={dragEnabled ? handleLongPress : undefined}
       onPress={handlePress}
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
@@ -1904,9 +1940,15 @@ function QuickDraggableEvent({
     >
       <Animated.View
         style={[
-          styles.compactEvent,
-          event.completed && styles.compactEventCompleted,
-          isDragging && styles.compactEventDragging,
+          variant === "compact" && styles.compactEvent,
+          variant === "compact" &&
+            event.completed &&
+            styles.compactEventCompleted,
+          variant === "compact" && isDragging && styles.compactEventDragging,
+          variant === "plain" && styles.draggablePlainEvent,
+          variant === "plain" &&
+            isDragging &&
+            styles.draggablePlainEventDragging,
           { transform: [{ scale: scaleAnimation }] },
         ]}
       >
@@ -1920,6 +1962,7 @@ function QuickDraggableEvent({
 
 type DraggableBottomSheetProps = {
   animationKey?: string | number | boolean | null;
+  canClose?: () => boolean;
   children: ReactNode;
   onClose: () => void;
   style?: object;
@@ -1927,6 +1970,7 @@ type DraggableBottomSheetProps = {
 
 function DraggableBottomSheet({
   animationKey,
+  canClose,
   children,
   onClose,
   style,
@@ -1969,6 +2013,17 @@ function DraggableBottomSheet({
   }, [animationKey, sheetOpacity, sheetScale, translateY]);
 
   const closeWithMotion = useCallback(() => {
+    if (canClose && !canClose()) {
+      Animated.spring(translateY, {
+        damping: 18,
+        mass: 0.8,
+        stiffness: 170,
+        toValue: 0,
+        useNativeDriver: true,
+      }).start();
+      return;
+    }
+
     translateY.stopAnimation();
     sheetOpacity.stopAnimation();
     sheetScale.stopAnimation();
@@ -1983,7 +2038,7 @@ function DraggableBottomSheet({
         onClose();
       }
     });
-  }, [onClose, sheetOpacity, sheetScale, translateY]);
+  }, [canClose, onClose, sheetOpacity, sheetScale, translateY]);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -2933,25 +2988,35 @@ export default function HomeScreen() {
     useState<CategoryFormErrors>({});
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [quickDrag, setQuickDrag] = useState<QuickDragState | null>(null);
+  const [isDayOrganizeMode, setIsDayOrganizeMode] = useState(false);
   const [lastDeletedEvent, setLastDeletedEvent] =
     useState<DeletedEventUndo | null>(null);
   const [appToast, setAppToast] = useState<AppToast | null>(null);
   const [pendingDeleteEventId, setPendingDeleteEventId] = useState<string | null>(null);
   const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
+  const [isDiscardConfirmVisible, setIsDiscardConfirmVisible] =
+    useState(false);
   const [isSignOutConfirmVisible, setIsSignOutConfirmVisible] = useState(false);
   const [isSyncTooltipVisible, setIsSyncTooltipVisible] = useState(false);
 
   const deleteConfirmOpacity = useRef(new Animated.Value(0)).current;
   const deleteConfirmScale = useRef(new Animated.Value(0.9)).current;
+  const discardConfirmOpacity = useRef(new Animated.Value(0)).current;
+  const discardConfirmScale = useRef(new Animated.Value(0.9)).current;
   const signOutConfirmOpacity = useRef(new Animated.Value(0)).current;
   const signOutConfirmScale = useRef(new Animated.Value(0.9)).current;
   const eventDetailFadeOpacity = useRef(new Animated.Value(0)).current;
+  const eventModalFadeOpacity = useRef(new Animated.Value(0)).current;
+  const filtersFadeOpacity = useRef(new Animated.Value(0)).current;
   const syncTooltipOpacity = useRef(new Animated.Value(0)).current;
   const syncTooltipScale = useRef(new Animated.Value(0.9)).current;
   const syncTooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const quickDragRef = useRef<QuickDragState | null>(null);
   const quickDropTargetRefs = useRef<Record<string, View | null>>({});
   const quickDropZonesRef = useRef<DayDropZone[]>([]);
+  const timelineDropTargetRefs = useRef<Record<string, View | null>>({});
+  const timelineDropZonesRef = useRef<HourDropZone[]>([]);
+  const eventFormSnapshotRef = useRef<string | null>(null);
   const undoDeleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
   const toastTranslateY = useRef(new Animated.Value(18)).current;
@@ -2977,6 +3042,30 @@ export default function HomeScreen() {
       deleteConfirmScale.setValue(0.9);
     }
   }, [isDeleteConfirmVisible, deleteConfirmOpacity, deleteConfirmScale]);
+
+  useEffect(() => {
+    if (isDiscardConfirmVisible) {
+      Animated.parallel([
+        Animated.timing(discardConfirmOpacity, {
+          duration: 200,
+          toValue: 1,
+          useNativeDriver: true,
+        }),
+        Animated.timing(discardConfirmScale, {
+          duration: 200,
+          toValue: 1,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      discardConfirmOpacity.setValue(0);
+      discardConfirmScale.setValue(0.9);
+    }
+  }, [
+    isDiscardConfirmVisible,
+    discardConfirmOpacity,
+    discardConfirmScale,
+  ]);
 
   useEffect(() => {
     if (isSignOutConfirmVisible) {
@@ -3666,6 +3755,17 @@ export default function HomeScreen() {
       (_, index) => startHour + index,
     );
   }, [selectedDay.events, selectedDayCurrentHour]);
+
+  useEffect(() => {
+    if (!isDayOrganizeMode || selectedDay.events.length > 0) {
+      return;
+    }
+
+    quickDragRef.current = null;
+    setQuickDrag(null);
+    setIsDayOrganizeMode(false);
+  }, [isDayOrganizeMode, selectedDay.events.length]);
+
   const activeQuickDragEventId = quickDrag?.eventId ?? null;
   const quickDragEvent = quickDrag
     ? visibleEvents.find((event) => event.id === quickDrag.eventId)
@@ -4039,18 +4139,74 @@ export default function HomeScreen() {
     });
   }, [weekDays]);
 
-  useEffect(() => {
-    if (!activeQuickDragEventId) {
-      quickDropZonesRef.current = [];
+  const measureTimelineDropTargets = useCallback(() => {
+    const measuredZones: HourDropZone[] = [];
+    let pendingMeasurements = selectedDayTimelineHours.length;
+
+    if (pendingMeasurements === 0) {
+      timelineDropZonesRef.current = measuredZones;
       return;
     }
 
-    const frame = requestAnimationFrame(measureQuickDropTargets);
+    selectedDayTimelineHours.forEach((hour) => {
+      const time = formatTimelineHour(hour);
+      const targetRef = timelineDropTargetRefs.current[time];
+
+      if (!targetRef) {
+        pendingMeasurements -= 1;
+
+        if (pendingMeasurements === 0) {
+          timelineDropZonesRef.current = measuredZones;
+        }
+
+        return;
+      }
+
+      targetRef.measureInWindow((x, y, width, height) => {
+        if (width > 0 && height > 0) {
+          measuredZones.push({
+            height,
+            hour,
+            time,
+            width,
+            x,
+            y,
+          });
+        }
+
+        pendingMeasurements -= 1;
+
+        if (pendingMeasurements === 0) {
+          timelineDropZonesRef.current = measuredZones;
+        }
+      });
+    });
+  }, [selectedDayTimelineHours]);
+
+  useEffect(() => {
+    if (!activeQuickDragEventId) {
+      quickDropZonesRef.current = [];
+      timelineDropZonesRef.current = [];
+      return;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      if (quickDragRef.current?.mode === "hour") {
+        measureTimelineDropTargets();
+        return;
+      }
+
+      measureQuickDropTargets();
+    });
 
     return () => {
       cancelAnimationFrame(frame);
     };
-  }, [activeQuickDragEventId, measureQuickDropTargets]);
+  }, [
+    activeQuickDragEventId,
+    measureQuickDropTargets,
+    measureTimelineDropTargets,
+  ]);
 
   function goToToday() {
     const currentDay = today.getDay();
@@ -4067,7 +4223,39 @@ export default function HomeScreen() {
 
   function openSearchPanel(nextScope: SearchScope = searchScope) {
     setSearchScope(nextScope);
+    filtersFadeOpacity.stopAnimation();
+    filtersFadeOpacity.setValue(0);
     setIsFiltersExpanded(true);
+    Animated.timing(filtersFadeOpacity, {
+      duration: 180,
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+  }
+
+  function finishCloseFiltersPanel() {
+    filtersFadeOpacity.setValue(0);
+    setIsFiltersExpanded(false);
+  }
+
+  function closeFiltersPanel(afterClose?: () => void) {
+    if (!isFiltersExpanded) {
+      finishCloseFiltersPanel();
+      afterClose?.();
+      return;
+    }
+
+    filtersFadeOpacity.stopAnimation();
+    Animated.timing(filtersFadeOpacity, {
+      duration: 180,
+      toValue: 0,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        finishCloseFiltersPanel();
+        afterClose?.();
+      }
+    });
   }
 
   function changeCalendarMonth(months: number) {
@@ -4101,25 +4289,83 @@ export default function HomeScreen() {
     setIsCalendarVisible(false);
   }
 
+  function showEventModalWithFade() {
+    eventModalFadeOpacity.stopAnimation();
+    eventModalFadeOpacity.setValue(0);
+    setIsEventModalVisible(true);
+    Animated.timing(eventModalFadeOpacity, {
+      duration: 180,
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+  }
+
+  function getEventFormSnapshot(
+    snapshotForm: EventForm,
+    snapshotTasks: AgendaEventTask[],
+    snapshotTaskDraft: string,
+    snapshotEditingEventId: string | null,
+  ) {
+    return JSON.stringify({
+      editingEventId: snapshotEditingEventId,
+      form: snapshotForm,
+      taskDraft: snapshotTaskDraft,
+      tasks: snapshotTasks.map((task) => ({
+        completed: task.completed,
+        title: task.title,
+      })),
+    });
+  }
+
+  function hasUnsavedEventModalChanges() {
+    if (!isEventModalVisible || !eventFormSnapshotRef.current) {
+      return false;
+    }
+
+    return (
+      eventFormSnapshotRef.current !==
+      getEventFormSnapshot(form, formTasks, taskDraft, editingEventId)
+    );
+  }
+
+  function requestEventModalClose() {
+    Keyboard.dismiss();
+
+    if (!hasUnsavedEventModalChanges()) {
+      return true;
+    }
+
+    setIsDiscardConfirmVisible(true);
+    void playAgendaActionFeedback("warning");
+    return false;
+  }
+
   function openNewEventModal(date = selectedDay.date, startTime?: string) {
     const defaultCategory = getCategory(FALLBACK_CATEGORY_ID);
     const emptyForm = createEmptyForm(date);
-
-    setIsDayDetailVisible(false);
-    setIsEventDetailVisible(false);
-    setSelectedEventOccurrenceDate(null);
-    setEditingEventId(null);
-    setForm({
+    const nextForm = {
       ...emptyForm,
       category: defaultCategory.id,
       color: defaultCategory.color,
       startTime: startTime ?? emptyForm.startTime,
       tone: defaultCategory.tone,
-    });
+    };
+
+    setIsDayDetailVisible(false);
+    setIsEventDetailVisible(false);
+    setSelectedEventOccurrenceDate(null);
+    setEditingEventId(null);
+    setForm(nextForm);
     setFormErrors({});
     setFormTasks([]);
     setTaskDraft("");
-    setIsEventModalVisible(true);
+    eventFormSnapshotRef.current = getEventFormSnapshot(
+      nextForm,
+      [],
+      "",
+      null,
+    );
+    showEventModalWithFade();
   }
 
   function openEventDetail(event: AgendaEvent, occurrenceDate?: Date) {
@@ -4200,10 +4446,7 @@ export default function HomeScreen() {
   }
 
   function openEditEventModal(event: AgendaEvent) {
-    setIsDayDetailVisible(false);
-    setIsEventDetailVisible(false);
-    setEditingEventId(event.id);
-    setForm({
+    const nextForm = {
       title: event.title,
       description:
         event.description === "Sin notas por ahora." ? "" : event.description,
@@ -4219,28 +4462,74 @@ export default function HomeScreen() {
       recurrenceWeekdays: event.recurrenceWeekdays,
       recurrenceEndDate: event.recurrenceEndDate,
       category: event.category,
-    });
+    };
+    const nextTasks = getTasksForEvent(event.id);
+
+    setIsDayDetailVisible(false);
+    setIsEventDetailVisible(false);
+    setEditingEventId(event.id);
+    setForm(nextForm);
     setFormErrors({});
-    setFormTasks(getTasksForEvent(event.id));
+    setFormTasks(nextTasks);
     setTaskDraft("");
     setActiveTimeField(null);
-    setIsEventModalVisible(true);
+    eventFormSnapshotRef.current = getEventFormSnapshot(
+      nextForm,
+      nextTasks,
+      "",
+      event.id,
+    );
+    showEventModalWithFade();
   }
 
   function finishCloseEventModal() {
+    eventModalFadeOpacity.setValue(0);
+    eventFormSnapshotRef.current = null;
     setIsEventModalVisible(false);
     setActiveTimeField(null);
     setEditingEventId(null);
     setIsDeleteConfirmVisible(false);
+    setIsDiscardConfirmVisible(false);
     setIsSignOutConfirmVisible(false);
     setFormErrors({});
     setFormTasks([]);
     setTaskDraft("");
   }
 
+  function closeEventModalWithoutPrompt() {
+    if (!isEventModalVisible) {
+      finishCloseEventModal();
+      return;
+    }
+
+    eventModalFadeOpacity.stopAnimation();
+    Animated.timing(eventModalFadeOpacity, {
+      duration: 180,
+      toValue: 0,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        finishCloseEventModal();
+      }
+    });
+  }
+
   function closeEventModal() {
-    Keyboard.dismiss();
-    finishCloseEventModal();
+    if (!requestEventModalClose()) {
+      return;
+    }
+
+    closeEventModalWithoutPrompt();
+  }
+
+  function cancelDiscardEventChanges() {
+    setIsDiscardConfirmVisible(false);
+  }
+
+  function confirmDiscardEventChanges() {
+    eventFormSnapshotRef.current = null;
+    setIsDiscardConfirmVisible(false);
+    closeEventModalWithoutPrompt();
   }
 
   function openDayDetail(index: number) {
@@ -4250,6 +4539,28 @@ export default function HomeScreen() {
 
   function closeDayDetail() {
     setIsDayDetailVisible(false);
+  }
+
+  function toggleDayOrganizeMode() {
+    if (isDayOrganizeMode) {
+      if (quickDragRef.current?.mode === "hour") {
+        cancelQuickDrag();
+      }
+
+      setIsDayOrganizeMode(false);
+      void playAgendaActionFeedback("selection");
+      return;
+    }
+
+    setIsDayOrganizeMode(true);
+    void playAgendaActionFeedback("selection");
+    showAppToast({
+      icon: "swap-vertical-outline",
+      message: "Mantén pulsado un evento y suéltalo sobre otra hora.",
+      title: "Modo mover activado",
+      variant: "info",
+    });
+    requestAnimationFrame(measureTimelineDropTargets);
   }
 
   function getQuickDropTargetIndex(pageX: number, pageY: number) {
@@ -4264,6 +4575,18 @@ export default function HomeScreen() {
     );
   }
 
+  function getTimelineDropTargetHour(pageX: number, pageY: number) {
+    return (
+      timelineDropZonesRef.current.find(
+        (zone) =>
+          pageX >= zone.x &&
+          pageX <= zone.x + zone.width &&
+          pageY >= zone.y &&
+          pageY <= zone.y + zone.height,
+      )?.hour ?? null
+    );
+  }
+
   function startQuickDrag(
     event: AgendaEvent,
     pageX: number,
@@ -4273,7 +4596,9 @@ export default function HomeScreen() {
 
     const nextDrag = {
       eventId: event.id,
+      mode: "day" as const,
       targetIndex: null,
+      targetHour: null,
       x: pageX,
       y: pageY,
     };
@@ -4285,6 +4610,32 @@ export default function HomeScreen() {
     requestAnimationFrame(measureQuickDropTargets);
   }
 
+  function startTimelineHourDrag(
+    event: AgendaEvent,
+    pageX: number,
+    pageY: number,
+  ) {
+    if (!isDayOrganizeMode) {
+      return;
+    }
+
+    Keyboard.dismiss();
+
+    const nextDrag = {
+      eventId: event.id,
+      mode: "hour" as const,
+      targetHour: null,
+      targetIndex: null,
+      x: pageX,
+      y: pageY,
+    };
+
+    quickDragRef.current = nextDrag;
+    setQuickDrag(nextDrag);
+
+    requestAnimationFrame(measureTimelineDropTargets);
+  }
+
   function updateQuickDrag(pageX: number, pageY: number) {
     const currentDrag = quickDragRef.current;
 
@@ -4292,9 +4643,13 @@ export default function HomeScreen() {
       return;
     }
 
+    const isHourDrag = currentDrag.mode === "hour";
     const nextDrag = {
       ...currentDrag,
-      targetIndex: getQuickDropTargetIndex(pageX, pageY),
+      targetHour: isHourDrag
+        ? getTimelineDropTargetHour(pageX, pageY)
+        : null,
+      targetIndex: isHourDrag ? null : getQuickDropTargetIndex(pageX, pageY),
       x: pageX,
       y: pageY,
     };
@@ -4317,10 +4672,25 @@ export default function HomeScreen() {
 
     const targetIndex =
       getQuickDropTargetIndex(pageX, pageY) ?? currentDrag.targetIndex;
+    const targetHour =
+      getTimelineDropTargetHour(pageX, pageY) ?? currentDrag.targetHour;
     const eventId = currentDrag.eventId;
 
     quickDragRef.current = null;
     setQuickDrag(null);
+
+    if (currentDrag.mode === "hour") {
+      if (targetHour === null) {
+        return;
+      }
+
+      await moveEventToTime(
+        eventId,
+        selectedDay.date,
+        formatTimelineHour(targetHour),
+      );
+      return;
+    }
 
     if (targetIndex === null) {
       return;
@@ -4333,6 +4703,74 @@ export default function HomeScreen() {
     }
 
     await moveEventToDate(eventId, targetDay.date);
+  }
+
+  async function moveEventToTime(
+    eventId: string,
+    targetDate: Date,
+    targetTime: string,
+  ) {
+    const currentEvent = events.find((event) => event.id === eventId);
+
+    if (!currentEvent) {
+      return;
+    }
+
+    const targetDateKey = toDateKey(targetDate);
+
+    if (
+      currentEvent.dateKey === targetDateKey &&
+      currentEvent.startTime === targetTime
+    ) {
+      return;
+    }
+
+    await cancelEventNotification(currentEvent.notificationId);
+
+    const movedEvent: AgendaEvent = {
+      ...currentEvent,
+      dateKey: targetDateKey,
+      notificationId: undefined,
+      startTime: targetTime,
+    };
+    const notificationId = movedEvent.completed
+      ? undefined
+      : await scheduleEventNotification(
+          movedEvent,
+          getCategoryForEvent(movedEvent),
+        );
+    const savedEvent = { ...movedEvent, notificationId };
+    const userId = session?.user.id;
+
+    setEvents((currentEvents) =>
+      currentEvents.map((event) => (event.id === eventId ? savedEvent : event)),
+    );
+    showAppToast({
+      icon: "time-outline",
+      message: `${savedEvent.title} · ${targetTime}`,
+      title: "Hora actualizada",
+      variant: "success",
+    });
+    setSyncStatus("Sincronizando...");
+
+    try {
+      if (!userId) {
+        setSyncStatus("Modo local");
+        return;
+      }
+
+      await saveSupabaseEvent(savedEvent, userId);
+      setSyncStatus("Sincronizado");
+    } catch (error) {
+      console.warn("No se pudo mover el evento en Supabase", error);
+      showAppToast({
+        icon: "cloud-offline-outline",
+        message: "El cambio queda guardado en local.",
+        title: "Sin conexión con la nube",
+        variant: "warning",
+      });
+      setSyncStatus("Modo local");
+    }
   }
 
   async function moveEventToDate(eventId: string, targetDate: Date) {
@@ -5015,10 +5453,8 @@ export default function HomeScreen() {
       ...currentTasks.filter((task) => task.eventId !== savedEvent.id),
       ...savedTasks,
     ]);
-    setIsEventModalVisible(false);
-    setEditingEventId(null);
-    setFormTasks([]);
-    setTaskDraft("");
+    eventFormSnapshotRef.current = null;
+    closeEventModalWithoutPrompt();
     void playAgendaActionFeedback(isEditingEvent ? "light" : "success");
     showAppToast({
       icon: isEditingEvent ? "checkmark-done-outline" : "calendar-outline",
@@ -5072,7 +5508,7 @@ export default function HomeScreen() {
 
         if (source === "modal") {
           closeEventDetail();
-          closeEventModal();
+          closeEventModalWithoutPrompt();
         }
 
         void deleteEventById(eventId);
@@ -5089,7 +5525,7 @@ export default function HomeScreen() {
     setIsDeleteConfirmVisible(false);
     setPendingDeleteEventId(null);
     closeEventDetail();
-    closeEventModal();
+    closeEventModalWithoutPrompt();
     await deleteEventById(deletedEventId);
   }
 
@@ -5633,10 +6069,20 @@ export default function HomeScreen() {
   }
 
   const quickDragTargetZone =
-    quickDrag?.targetIndex === null || quickDrag?.targetIndex === undefined
+    quickDrag?.mode !== "day" ||
+    quickDrag.targetIndex === null ||
+    quickDrag.targetIndex === undefined
       ? null
       : quickDropZonesRef.current.find(
           (zone) => zone.index === quickDrag.targetIndex,
+        ) ?? null;
+  const quickDragHourTargetZone =
+    quickDrag?.mode !== "hour" ||
+    quickDrag.targetHour === null ||
+    quickDrag.targetHour === undefined
+      ? null
+      : timelineDropZonesRef.current.find(
+          (zone) => zone.hour === quickDrag.targetHour,
         ) ?? null;
 
   return (
@@ -6027,20 +6473,64 @@ export default function HomeScreen() {
                 {MONTH_FORMATTER.format(selectedDay.date)}
               </Text>
             </View>
-            {!isSameDay(selectedDay.date, today) ? (
-              <Pressable style={styles.todaySmallButton} onPress={goToToday}>
-                <Ionicons name="locate-outline" size={15} color={primaryIconColor} />
-                <Text style={styles.todaySmallButtonText}>Hoy</Text>
+            <View style={styles.focusActions}>
+              {!isSameDay(selectedDay.date, today) ? (
+                <Pressable style={styles.todaySmallButton} onPress={goToToday}>
+                  <Ionicons name="locate-outline" size={15} color={primaryIconColor} />
+                  <Text style={styles.todaySmallButtonText}>Hoy</Text>
+                </Pressable>
+              ) : null}
+              {selectedDay.events.length > 0 ? (
+                <Pressable
+                  accessibilityLabel={
+                    isDayOrganizeMode
+                      ? "Terminar modo mover eventos"
+                      : "Activar modo mover eventos"
+                  }
+                  style={[
+                    styles.dayOrganizeButton,
+                    isDayOrganizeMode && styles.dayOrganizeButtonActive,
+                  ]}
+                  onPress={toggleDayOrganizeMode}
+                >
+                  <Ionicons
+                    name={
+                      isDayOrganizeMode
+                        ? "checkmark-outline"
+                        : "swap-vertical-outline"
+                    }
+                    size={17}
+                    color={isDayOrganizeMode ? "#FFFFFF" : primaryIconColor}
+                  />
+                  <Text
+                    style={[
+                      styles.dayOrganizeButtonText,
+                      isDayOrganizeMode &&
+                        styles.dayOrganizeButtonTextActive,
+                    ]}
+                  >
+                    {isDayOrganizeMode ? "Listo" : "Mover"}
+                  </Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                accessibilityLabel="Crear evento para el día seleccionado"
+                style={styles.smallAddButton}
+                onPress={() => openNewEventModal(selectedDay.date)}
+              >
+                <Ionicons name="add" size={24} color="#FFFFFF" />
               </Pressable>
-            ) : null}
-            <Pressable
-              accessibilityLabel="Crear evento para el día seleccionado"
-              style={styles.smallAddButton}
-              onPress={() => openNewEventModal(selectedDay.date)}
-            >
-              <Ionicons name="add" size={24} color="#FFFFFF" />
-            </Pressable>
+            </View>
           </View>
+
+          {isDayOrganizeMode && selectedDay.events.length > 0 ? (
+            <View style={styles.dayOrganizeHint}>
+              <Ionicons name="move-outline" size={16} color="#3D8B7D" />
+              <Text style={styles.dayOrganizeHintText}>
+                Mantén pulsado un evento y suéltalo sobre otra hora.
+              </Text>
+            </View>
+          ) : null}
 
           {selectedDay.events.length === 0 ? (
             <AgendaEmptyState
@@ -6105,6 +6595,9 @@ export default function HomeScreen() {
                     {hourEvents.length === 0 ? (
                       <Pressable
                         accessibilityLabel={`Crear evento a las ${slotTime}`}
+                        ref={(node) => {
+                          timelineDropTargetRefs.current[slotTime] = node;
+                        }}
                         style={styles.timelineHourSlot}
                         onPress={openSlot}
                       >
@@ -6121,7 +6614,12 @@ export default function HomeScreen() {
                         </View>
                       </Pressable>
                     ) : (
-                      <View style={styles.timelineHourSlot}>
+                      <View
+                        ref={(node) => {
+                          timelineDropTargetRefs.current[slotTime] = node;
+                        }}
+                        style={styles.timelineHourSlot}
+                      >
                         {nowLine}
                         <View style={styles.timelineEventStack}>
                           {hourEvents.map((event) => {
@@ -6138,6 +6636,7 @@ export default function HomeScreen() {
                               <SwipeableEventRow
                                 key={event.id}
                                 completed={event.completed}
+                                enabled={!isDayOrganizeMode}
                                 onComplete={() => {
                                   void toggleEventCompleted(event.id);
                                 }}
@@ -6145,24 +6644,37 @@ export default function HomeScreen() {
                                   requestDeleteEvent(event.id);
                                 }}
                               >
-                                <View
-                                  style={[
-                                    styles.timelineEventCard,
-                                    {
-                                      borderLeftColor: event.completed
-                                        ? "#9CA3AF"
-                                        : event.color,
-                                    },
-                                    event.completed &&
-                                      styles.timelineEventCardCompleted,
-                                  ]}
+                                <QuickDraggableEvent
+                                  dragEnabled={isDayOrganizeMode}
+                                  event={event}
+                                  isDragging={
+                                    quickDrag?.mode === "hour" &&
+                                    quickDrag.eventId === event.id
+                                  }
+                                  onDragCancel={cancelQuickDrag}
+                                  onDragEnd={finishQuickDrag}
+                                  onDragMove={updateQuickDrag}
+                                  onDragStart={startTimelineHourDrag}
+                                  onOpen={() =>
+                                    openEventDetail(event, occurrenceDate)
+                                  }
+                                  variant="plain"
                                 >
-                                  <Pressable
-                                    style={styles.timelineEventPressable}
-                                    onPress={() =>
-                                      openEventDetail(event, occurrenceDate)
-                                    }
+                                  <View
+                                    style={[
+                                      styles.timelineEventCard,
+                                      {
+                                        borderLeftColor: event.completed
+                                          ? "#9CA3AF"
+                                          : event.color,
+                                      },
+                                      event.completed &&
+                                        styles.timelineEventCardCompleted,
+                                      isDayOrganizeMode &&
+                                        styles.timelineEventCardOrganizing,
+                                    ]}
                                   >
+                                    <View style={styles.timelineEventPressable}>
                                     <View
                                       style={[
                                         styles.timelineEventIcon,
@@ -6238,19 +6750,9 @@ export default function HomeScreen() {
                                         ) : null}
                                       </View>
                                     </View>
-                                  </Pressable>
-                                  <Pressable
-                                    accessibilityLabel="Duplicar evento"
-                                    style={styles.timelineDuplicateButton}
-                                    onPress={() => duplicateEvent(event)}
-                                  >
-                                    <Ionicons
-                                      name="copy-outline"
-                                      size={18}
-                                      color="#6B7280"
-                                    />
-                                  </Pressable>
-                                </View>
+                                    </View>
+                                  </View>
+                                </QuickDraggableEvent>
                               </SwipeableEventRow>
                             );
                           })}
@@ -6501,6 +7003,18 @@ export default function HomeScreen() {
               ]}
             />
           ) : null}
+          {quickDragHourTargetZone ? (
+            <View
+              style={[
+                styles.quickDragTargetTopLine,
+                {
+                  left: quickDragHourTargetZone.x,
+                  top: quickDragHourTargetZone.y,
+                  width: quickDragHourTargetZone.width,
+                },
+              ]}
+            />
+          ) : null}
           <View
             style={[
               styles.quickDragPreview,
@@ -6528,7 +7042,9 @@ export default function HomeScreen() {
                 {quickDragEvent.title}
               </Text>
               <Text style={styles.quickDragPreviewMeta}>
-                {quickDragEvent.startTime}
+                {quickDrag.mode === "hour" && quickDrag.targetHour !== null
+                  ? formatTimelineHour(quickDrag.targetHour)
+                  : quickDragEvent.startTime}
               </Text>
             </View>
           </View>
@@ -6823,18 +7339,20 @@ export default function HomeScreen() {
 
       <Modal
         animationType="fade"
-        onRequestClose={() => setIsFiltersExpanded(false)}
+        onRequestClose={() => closeFiltersPanel()}
         transparent
         visible={isFiltersExpanded}
       >
-        <View style={styles.dayDetailOverlay}>
+        <Animated.View
+          style={[styles.dayDetailOverlay, { opacity: filtersFadeOpacity }]}
+        >
           <Pressable
             style={styles.modalBackdrop}
-            onPress={() => setIsFiltersExpanded(false)}
+            onPress={() => closeFiltersPanel()}
           />
           <DraggableBottomSheet
             animationKey={isFiltersExpanded}
-            onClose={() => setIsFiltersExpanded(false)}
+            onClose={finishCloseFiltersPanel}
             style={styles.filtersBottomSheet}
           >
             <View style={styles.filtersSheetHeader}>
@@ -7021,8 +7539,9 @@ export default function HomeScreen() {
                       key={`${event.id}-${toDateKey(occurrenceDate)}-filters`}
                       style={styles.filtersResultItem}
                       onPress={() => {
-                        setIsFiltersExpanded(false);
-                        openEventDetail(event, occurrenceDate);
+                        closeFiltersPanel(() => {
+                          openEventDetail(event, occurrenceDate);
+                        });
                       }}
                     >
                       <View
@@ -7073,13 +7592,13 @@ export default function HomeScreen() {
               </Pressable>
               <Pressable
                 style={styles.filtersSheetPrimaryButton}
-                onPress={() => setIsFiltersExpanded(false)}
+                onPress={() => closeFiltersPanel()}
               >
                 <Text style={styles.filtersSheetPrimaryText}>Aplicar</Text>
               </Pressable>
             </View>
           </DraggableBottomSheet>
-        </View>
+        </Animated.View>
       </Modal>
 
       <Modal
@@ -7853,16 +8372,20 @@ export default function HomeScreen() {
         transparent
         visible={isEventModalVisible}
       >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={styles.modalOverlay}
+        <Animated.View
+          style={[styles.modalOverlay, { opacity: eventModalFadeOpacity }]}
         >
-          <Pressable style={styles.modalBackdrop} onPress={closeEventModal} />
-          <DraggableBottomSheet
-            animationKey={`${editingEventId ?? "new"}-${isEventModalVisible}`}
-            onClose={finishCloseEventModal}
-            style={styles.modalCard}
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.modalOverlay}
           >
+            <Pressable style={styles.modalBackdrop} onPress={closeEventModal} />
+            <DraggableBottomSheet
+              animationKey={`${editingEventId ?? "new"}-${isEventModalVisible}`}
+              canClose={requestEventModalClose}
+              onClose={finishCloseEventModal}
+              style={styles.modalCard}
+            >
             <View style={styles.modalHeader}>
               <View style={styles.modalTitleBlock}>
                 <Text style={styles.sectionLabel}>
@@ -8514,9 +9037,9 @@ export default function HomeScreen() {
                 </Pressable>
               </View>
             </ScrollView>
-          </DraggableBottomSheet>
+            </DraggableBottomSheet>
 
-          {activeTimeField ? (
+            {activeTimeField ? (
             <View style={styles.timePickerOverlay}>
               <Pressable
                 style={styles.timePickerBackdrop}
@@ -8616,7 +9139,64 @@ export default function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          ) : null}
+            ) : null}
+
+            {isDiscardConfirmVisible ? (
+              <View style={styles.confirmOverlay}>
+                <Pressable
+                  style={styles.timePickerBackdrop}
+                  onPress={cancelDiscardEventChanges}
+                />
+                <Animated.View
+                  style={[
+                    styles.confirmCard,
+                    {
+                      opacity: discardConfirmOpacity,
+                      transform: [{ scale: discardConfirmScale }],
+                    },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.confirmIcon,
+                      styles.discardConfirmIcon,
+                    ]}
+                  >
+                    <Ionicons
+                      name="create-outline"
+                      size={24}
+                      color="#D28A2E"
+                    />
+                  </View>
+                  <Text style={styles.confirmTitle}>Descartar cambios</Text>
+                  <Text style={styles.confirmText}>
+                    Hay cambios sin guardar en este evento. Puedes seguir
+                    editando o salir sin guardarlos.
+                  </Text>
+                  <View style={styles.confirmActions}>
+                    <Pressable
+                      style={styles.cancelDeleteButton}
+                      onPress={cancelDiscardEventChanges}
+                    >
+                      <Text style={styles.cancelDeleteButtonText}>
+                        Seguir editando
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={[
+                        styles.confirmDeleteButton,
+                        styles.discardConfirmButton,
+                      ]}
+                      onPress={confirmDiscardEventChanges}
+                    >
+                      <Text style={styles.confirmDeleteButtonText}>
+                        Descartar
+                      </Text>
+                    </Pressable>
+                  </View>
+                </Animated.View>
+              </View>
+            ) : null}
 
           {isDeleteConfirmVisible ? (
             <View style={styles.confirmOverlay}>
@@ -8656,9 +9236,10 @@ export default function HomeScreen() {
                 </View>
               </Animated.View>
             </View>
-          ) : null}
+            ) : null}
 
-        </KeyboardAvoidingView>
+          </KeyboardAvoidingView>
+        </Animated.View>
       </Modal>
 
 
@@ -10482,6 +11063,12 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  focusActions: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexShrink: 0,
+    gap: 8,
+  },
   sectionLabel: {
     color: "#8A6F5A",
     fontSize: 12,
@@ -10510,6 +11097,48 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 4,
     width: 44,
+  },
+  dayOrganizeButton: {
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E8DFD3",
+    borderRadius: 15,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 6,
+    minHeight: 40,
+    paddingHorizontal: 11,
+  },
+  dayOrganizeButtonActive: {
+    backgroundColor: "#3D8B7D",
+    borderColor: "#3D8B7D",
+  },
+  dayOrganizeButtonText: {
+    color: "#1F2A37",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  dayOrganizeButtonTextActive: {
+    color: "#FFFFFF",
+  },
+  dayOrganizeHint: {
+    alignItems: "center",
+    backgroundColor: "#E7F4F1",
+    borderColor: "#CFE8E2",
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  dayOrganizeHintText: {
+    color: "#1F2A37",
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 18,
   },
   timeline: {
     gap: 0,
@@ -10624,6 +11253,10 @@ const styles = StyleSheet.create({
   },
   timelineEventCardCompleted: {
     opacity: 0.68,
+  },
+  timelineEventCardOrganizing: {
+    borderColor: "#CFE8E2",
+    borderWidth: 1,
   },
   timelineEventPressable: {
     alignItems: "center",
@@ -11022,6 +11655,12 @@ const styles = StyleSheet.create({
     opacity: 0.48,
     paddingHorizontal: 6,
     paddingVertical: 4,
+  },
+  draggablePlainEvent: {
+    borderRadius: 18,
+  },
+  draggablePlainEventDragging: {
+    opacity: 0.5,
   },
   compactDot: {
     borderRadius: 4,
@@ -12264,6 +12903,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: 48,
   },
+  discardConfirmIcon: {
+    backgroundColor: "#FFF1DF",
+  },
   confirmTitle: {
     color: "#111827",
     fontSize: 21,
@@ -12306,6 +12948,9 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     minHeight: 48,
+  },
+  discardConfirmButton: {
+    backgroundColor: "#D28A2E",
   },
   confirmDeleteButtonText: {
     color: "#FFFFFF",
