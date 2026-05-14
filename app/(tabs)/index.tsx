@@ -16,6 +16,7 @@ import {
   useState,
 } from "react";
 import {
+  AccessibilityInfo,
   Alert,
   Animated,
   type GestureResponderEvent,
@@ -57,6 +58,7 @@ type AgendaEvent = {
   recurrenceEndDate?: string;
   category: EventCategory;
   notificationId?: string;
+  deletedAt?: string;
 };
 
 type EventForm = {
@@ -102,6 +104,7 @@ type AgendaEventRow = {
   recurrence_end_date: string | null;
   category: EventCategory | null;
   notification_id: string | null;
+  deleted_at: string | null;
 };
 
 type AgendaEventTaskRow = {
@@ -226,12 +229,46 @@ type EventTemplate = {
   description: string;
   icon: CategoryIcon;
   id: string;
+  isDefault: boolean;
   label: string;
   location: string;
   reminder: string;
+  sortOrder: number;
   startTime?: string;
   tasks: string[];
   title: string;
+};
+
+type EventTemplateRow = {
+  user_id: string;
+  id: string;
+  label: string;
+  title: string;
+  description: string;
+  location: string | null;
+  reminder: string;
+  start_time: string | null;
+  category_id: string | null;
+  icon: string;
+  tasks: string[] | null;
+  sort_order: number | null;
+  is_default: boolean | null;
+};
+
+type DeletedEventUndo = {
+  event: AgendaEvent;
+  tasks: AgendaEventTask[];
+};
+type AppToastVariant = "success" | "info" | "warning" | "danger";
+type AppToastAction = "undo-delete";
+type AppToast = {
+  action?: AppToastAction;
+  duration?: number;
+  icon: CategoryIcon;
+  id: string;
+  message?: string;
+  title: string;
+  variant: AppToastVariant;
 };
 
 const WEEK_DAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
@@ -267,7 +304,10 @@ const CATEGORIES_STORAGE_KEY = "agenda-app/categories";
 const CATEGORIES_STORAGE_FILE = "agenda-categories.json";
 const EVENT_TASKS_STORAGE_KEY = "agenda-app/event-tasks";
 const EVENT_TASKS_STORAGE_FILE = "agenda-event-tasks.json";
+const EVENT_TEMPLATES_STORAGE_KEY = "agenda-app/event-templates";
+const EVENT_TEMPLATES_STORAGE_FILE = "agenda-event-templates.json";
 const FALLBACK_CATEGORY_ID = "personal";
+const TIMELINE_HOUR_SLOT_HEIGHT = 72;
 const UPCOMING_WINDOW_DAYS = 10;
 const SEARCH_RESULTS_LIMIT = 12;
 
@@ -370,15 +410,17 @@ const DEFAULT_EVENT_CATEGORIES: AgendaCategory[] = [
   },
 ];
 
-const EVENT_TEMPLATES: EventTemplate[] = [
+const DEFAULT_EVENT_TEMPLATES: EventTemplate[] = [
   {
     categoryId: "cita",
     description: "Revisar hora, dirección y llevar lo necesario.",
     icon: "medical-outline",
     id: "medico",
+    isDefault: true,
     label: "Médico",
     location: "",
     reminder: "1 hora antes",
+    sortOrder: 0,
     startTime: "10:00",
     tasks: [
       "Confirmar hora de la cita",
@@ -393,9 +435,11 @@ const EVENT_TEMPLATES: EventTemplate[] = [
     description: "Lista rápida para no olvidarse de nada importante.",
     icon: "cart-outline",
     id: "compra",
+    isDefault: true,
     label: "Compra",
     location: "Supermercado",
     reminder: "30 min antes",
+    sortOrder: 1,
     startTime: "11:00",
     tasks: [
       "Revisar nevera y despensa",
@@ -410,9 +454,11 @@ const EVENT_TEMPLATES: EventTemplate[] = [
     description: "Plan bonito reservado para disfrutar sin prisas.",
     icon: "heart-outline",
     id: "cita",
+    isDefault: true,
     label: "Cita",
     location: "",
     reminder: "1 hora antes",
+    sortOrder: 2,
     startTime: "20:30",
     tasks: [
       "Reservar sitio",
@@ -427,9 +473,11 @@ const EVENT_TEMPLATES: EventTemplate[] = [
     description: "Organizar viaje con lo esencial controlado.",
     icon: "airplane-outline",
     id: "viaje",
+    isDefault: true,
     label: "Viaje",
     location: "",
     reminder: "1 hora antes",
+    sortOrder: 3,
     startTime: "09:00",
     tasks: [
       "Revisar documentación",
@@ -445,9 +493,11 @@ const EVENT_TEMPLATES: EventTemplate[] = [
     description: "Preparar cumpleaños con regalo, felicitación y plan.",
     icon: "gift-outline",
     id: "cumpleanos",
+    isDefault: true,
     label: "Cumple",
     location: "",
     reminder: "1 hora antes",
+    sortOrder: 4,
     startTime: "18:00",
     tasks: [
       "Comprar regalo",
@@ -462,9 +512,11 @@ const EVENT_TEMPLATES: EventTemplate[] = [
     description: "Bloque enfocado para avanzar sin interrupciones.",
     icon: "briefcase-outline",
     id: "trabajo",
+    isDefault: true,
     label: "Trabajo",
     location: "",
     reminder: "15 min antes",
+    sortOrder: 5,
     startTime: "09:00",
     tasks: [
       "Definir objetivo del bloque",
@@ -526,6 +578,32 @@ const REMINDER_OFFSETS_IN_MINUTES: Record<string, number | null> = {
   "1 hora antes": 60,
 };
 
+const TOAST_PALETTE: Record<
+  AppToastVariant,
+  { backgroundColor: string; iconBackgroundColor: string; iconColor: string }
+> = {
+  success: {
+    backgroundColor: "#102B25",
+    iconBackgroundColor: "#3D8B7D",
+    iconColor: "#FFFFFF",
+  },
+  info: {
+    backgroundColor: "#172033",
+    iconBackgroundColor: "#4D74B8",
+    iconColor: "#FFFFFF",
+  },
+  warning: {
+    backgroundColor: "#3B2A12",
+    iconBackgroundColor: "#D28A2E",
+    iconColor: "#FFFFFF",
+  },
+  danger: {
+    backgroundColor: "#3A1616",
+    iconBackgroundColor: "#B42318",
+    iconColor: "#FFFFFF",
+  },
+};
+
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldPlaySound: true,
@@ -585,6 +663,23 @@ function showConfirmDialog({
 
 function createDefaultCategories() {
   return DEFAULT_EVENT_CATEGORIES.map((category) => ({ ...category }));
+}
+
+function createDefaultEventTemplates() {
+  return DEFAULT_EVENT_TEMPLATES.map((template) => ({
+    ...template,
+    tasks: [...template.tasks],
+  }));
+}
+
+function sortEventTemplates(templates: EventTemplate[]) {
+  return [...templates].sort((firstTemplate, secondTemplate) => {
+    if (firstTemplate.sortOrder !== secondTemplate.sortOrder) {
+      return firstTemplate.sortOrder - secondTemplate.sortOrder;
+    }
+
+    return firstTemplate.label.localeCompare(secondTemplate.label, "es");
+  });
 }
 
 function sortCategories(categories: AgendaCategory[]) {
@@ -814,14 +909,6 @@ function getReminderBadgeLabel(
   return reminderInfo.label;
 }
 
-function isCriticalReminderState(state: ReminderVisualState) {
-  return state === "overdue" || state === "now";
-}
-
-function isSoonReminderState(state: ReminderVisualState) {
-  return state === "soon";
-}
-
 function createInitialEvents(today: Date): AgendaEvent[] {
   const weekStart = startOfWeek(today);
   const eventData = [
@@ -927,6 +1014,17 @@ function splitTime(time: string) {
     hour: hour.padStart(2, "0"),
     minute: minute.padStart(2, "0"),
   };
+}
+
+function formatTimelineHour(hour: number) {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+function getDateWithTime(date: Date, time: string) {
+  const nextDate = new Date(date);
+  const { hour, minute } = splitTime(time);
+  nextDate.setHours(Number(hour), Number(minute), 0, 0);
+  return nextDate;
 }
 
 function parseDateKey(dateKey: string) {
@@ -1050,6 +1148,59 @@ function normalizeAgendaCategoryList(value: unknown) {
     : null;
 }
 
+function normalizeEventTemplate(value: unknown): EventTemplate | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<EventTemplate>;
+
+  if (
+    typeof candidate.id !== "string" ||
+    typeof candidate.label !== "string" ||
+    typeof candidate.title !== "string" ||
+    typeof candidate.description !== "string" ||
+    typeof candidate.location !== "string" ||
+    typeof candidate.reminder !== "string" ||
+    typeof candidate.categoryId !== "string" ||
+    !Array.isArray(candidate.tasks)
+  ) {
+    return null;
+  }
+
+  return {
+    id: candidate.id,
+    label: candidate.label,
+    title: candidate.title,
+    description: candidate.description,
+    location: candidate.location,
+    reminder: candidate.reminder,
+    startTime:
+      typeof candidate.startTime === "string" ? candidate.startTime : undefined,
+    categoryId: candidate.categoryId,
+    icon: normalizeCategoryIcon(candidate.icon),
+    tasks: candidate.tasks.filter((task): task is string => typeof task === "string"),
+    sortOrder:
+      typeof candidate.sortOrder === "number" ? candidate.sortOrder : 999,
+    isDefault:
+      typeof candidate.isDefault === "boolean" ? candidate.isDefault : false,
+  };
+}
+
+function normalizeEventTemplateList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const normalizedTemplates = value
+    .map((template) => normalizeEventTemplate(template))
+    .filter((template): template is EventTemplate => template !== null);
+
+  return normalizedTemplates.length > 0
+    ? sortEventTemplates(normalizedTemplates)
+    : null;
+}
+
 function normalizeAgendaEvent(value: unknown): AgendaEvent | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -1101,6 +1252,8 @@ function normalizeAgendaEvent(value: unknown): AgendaEvent | null {
       typeof candidate.notificationId === "string"
         ? candidate.notificationId
         : undefined,
+    deletedAt:
+      typeof candidate.deletedAt === "string" ? candidate.deletedAt : undefined,
   };
 }
 
@@ -1766,19 +1919,71 @@ function QuickDraggableEvent({
 
 
 type DraggableBottomSheetProps = {
+  animationKey?: string | number | boolean | null;
   children: ReactNode;
   onClose: () => void;
   style?: object;
 };
 
 function DraggableBottomSheet({
+  animationKey,
   children,
   onClose,
   style,
 }: DraggableBottomSheetProps) {
   const styles = useAgendaStyles();
-  const translateY = useRef(new Animated.Value(0)).current;
+  const translateY = useRef(new Animated.Value(34)).current;
+  const sheetOpacity = useRef(new Animated.Value(0)).current;
+  const sheetScale = useRef(new Animated.Value(0.98)).current;
   const startYRef = useRef(0);
+
+  useEffect(() => {
+    translateY.stopAnimation();
+    sheetOpacity.stopAnimation();
+    sheetScale.stopAnimation();
+    translateY.setValue(34);
+    sheetOpacity.setValue(0);
+    sheetScale.setValue(0.98);
+
+    Animated.parallel([
+      Animated.spring(translateY, {
+        damping: 20,
+        mass: 0.75,
+        stiffness: 190,
+        toValue: 0,
+        useNativeDriver: true,
+      }),
+      Animated.spring(sheetScale, {
+        damping: 18,
+        mass: 0.75,
+        stiffness: 190,
+        toValue: 1,
+        useNativeDriver: true,
+      }),
+      Animated.timing(sheetOpacity, {
+        duration: 170,
+        toValue: 1,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [animationKey, sheetOpacity, sheetScale, translateY]);
+
+  const closeWithMotion = useCallback(() => {
+    translateY.stopAnimation();
+    sheetOpacity.stopAnimation();
+    sheetScale.stopAnimation();
+    sheetScale.setValue(1);
+
+    Animated.timing(sheetOpacity, {
+      duration: 170,
+      toValue: 0,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        onClose();
+      }
+    });
+  }, [onClose, sheetOpacity, sheetScale, translateY]);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -1796,7 +2001,7 @@ function DraggableBottomSheet({
       },
       onPanResponderRelease: (_event, gestureState) => {
         if (gestureState.dy > 130 || gestureState.vy > 1.05) {
-          onClose();
+          closeWithMotion();
           return;
         }
 
@@ -1822,7 +2027,14 @@ function DraggableBottomSheet({
 
   return (
     <Animated.View
-      style={[styles.draggableSheet, style, { transform: [{ translateY }] }]}
+      style={[
+        styles.draggableSheet,
+        style,
+        {
+          opacity: sheetOpacity,
+          transform: [{ translateY }, { scale: sheetScale }],
+        },
+      ]}
     >
       <View
         accessibilityLabel="Arrastrar modal"
@@ -1994,6 +2206,39 @@ async function playCompletionFeedback(completed: boolean) {
   }
 }
 
+async function playAgendaActionFeedback(
+  feedback: "light" | "selection" | "success" | "warning",
+) {
+  if (Platform.OS === "web") {
+    return;
+  }
+
+  try {
+    if (feedback === "success") {
+      await Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Success,
+      );
+      return;
+    }
+
+    if (feedback === "warning") {
+      await Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Warning,
+      );
+      return;
+    }
+
+    if (feedback === "light") {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      return;
+    }
+
+    await Haptics.selectionAsync();
+  } catch (error) {
+    console.warn("No se pudo reproducir la vibración de la agenda", error);
+  }
+}
+
 function getEventsFile() {
   return new File(Paths.document, EVENTS_STORAGE_FILE);
 }
@@ -2004,6 +2249,10 @@ function getCategoriesFile() {
 
 function getEventTasksFile() {
   return new File(Paths.document, EVENT_TASKS_STORAGE_FILE);
+}
+
+function getEventTemplatesFile() {
+  return new File(Paths.document, EVENT_TEMPLATES_STORAGE_FILE);
 }
 
 function normalizeAgendaEventList(value: unknown) {
@@ -2206,6 +2455,62 @@ function saveStoredCategories(categories: AgendaCategory[]) {
   }
 }
 
+async function loadStoredEventTemplates() {
+  try {
+    if (Platform.OS === "web") {
+      const localStorage = (
+        globalThis as { localStorage?: BrowserLocalStorage }
+      ).localStorage;
+      const storedTemplates = localStorage?.getItem(EVENT_TEMPLATES_STORAGE_KEY);
+
+      if (!storedTemplates) {
+        return null;
+      }
+
+      const parsedTemplates: unknown = JSON.parse(storedTemplates);
+      return normalizeEventTemplateList(parsedTemplates);
+    }
+
+    const templatesFile = getEventTemplatesFile();
+
+    if (!templatesFile.exists) {
+      return null;
+    }
+
+    const storedTemplates = await templatesFile.text();
+    const parsedTemplates: unknown = JSON.parse(storedTemplates);
+
+    return normalizeEventTemplateList(parsedTemplates);
+  } catch (error) {
+    console.warn("No se pudieron cargar las plantillas locales", error);
+    return null;
+  }
+}
+
+function saveStoredEventTemplates(templates: EventTemplate[]) {
+  try {
+    const serializedTemplates = JSON.stringify(templates);
+
+    if (Platform.OS === "web") {
+      const localStorage = (
+        globalThis as { localStorage?: BrowserLocalStorage }
+      ).localStorage;
+      localStorage?.setItem(EVENT_TEMPLATES_STORAGE_KEY, serializedTemplates);
+      return;
+    }
+
+    const templatesFile = getEventTemplatesFile();
+
+    if (!templatesFile.exists) {
+      templatesFile.create({ intermediates: true, overwrite: true });
+    }
+
+    templatesFile.write(serializedTemplates);
+  } catch (error) {
+    console.warn("No se pudieron guardar las plantillas locales", error);
+  }
+}
+
 function eventToRow(event: AgendaEvent, userId: string): AgendaEventRow {
   return {
     id: event.id,
@@ -2225,6 +2530,7 @@ function eventToRow(event: AgendaEvent, userId: string): AgendaEventRow {
     recurrence_end_date: event.recurrenceEndDate ?? null,
     category: event.category,
     notification_id: event.notificationId ?? null,
+    deleted_at: event.deletedAt ?? null,
   };
 }
 
@@ -2246,6 +2552,48 @@ function rowToEvent(row: AgendaEventRow): AgendaEvent {
     recurrenceEndDate: normalizeRecurrenceEndDate(row.recurrence_end_date),
     category: isValidEventCategory(row.category) ? row.category : "personal",
     notificationId: row.notification_id ?? undefined,
+    deletedAt: row.deleted_at ?? undefined,
+  };
+}
+
+function eventTemplateToRow(
+  template: EventTemplate,
+  userId: string,
+): EventTemplateRow {
+  return {
+    user_id: userId,
+    id: template.id,
+    label: template.label,
+    title: template.title,
+    description: template.description,
+    location: template.location,
+    reminder: template.reminder,
+    start_time: template.startTime ?? null,
+    category_id: template.categoryId,
+    icon: template.icon,
+    tasks: template.tasks,
+    sort_order: template.sortOrder,
+    is_default: template.isDefault,
+  };
+}
+
+function rowToEventTemplate(row: EventTemplateRow): EventTemplate {
+  return {
+    id: row.id,
+    label: row.label,
+    title: row.title,
+    description: row.description,
+    location: row.location ?? "",
+    reminder: row.reminder,
+    startTime: row.start_time ?? undefined,
+    categoryId:
+      typeof row.category_id === "string" && row.category_id.trim()
+        ? row.category_id
+        : FALLBACK_CATEGORY_ID,
+    icon: normalizeCategoryIcon(row.icon),
+    tasks: row.tasks ?? [],
+    sortOrder: row.sort_order ?? 999,
+    isDefault: row.is_default ?? false,
   };
 }
 
@@ -2380,11 +2728,33 @@ async function ensureDefaultCategories(
   return nextCategories;
 }
 
+async function ensureDefaultEventTemplates(
+  templates: EventTemplate[],
+  userId?: string,
+) {
+  const existingIds = new Set(templates.map((template) => template.id));
+  const missingTemplates = createDefaultEventTemplates().filter(
+    (template) => !existingIds.has(template.id),
+  );
+
+  if (missingTemplates.length === 0) {
+    return sortEventTemplates(templates);
+  }
+
+  const nextTemplates = sortEventTemplates([...templates, ...missingTemplates]);
+
+  if (userId) {
+    await saveSupabaseEventTemplates(missingTemplates, userId);
+  }
+
+  return nextTemplates;
+}
+
 async function loadSupabaseEvents(userId: string) {
   const { data, error } = await supabase
     .from("agenda_events")
     .select(
-      "id,user_id,title,description,location,completed,date_key,start_time,color,tone,reminder,recurrence,recurrence_interval,recurrence_weekdays,recurrence_end_date,category,notification_id",
+      "id,user_id,title,description,location,completed,date_key,start_time,color,tone,reminder,recurrence,recurrence_interval,recurrence_weekdays,recurrence_end_date,category,notification_id,deleted_at",
     )
     .eq("user_id", userId)
     .order("date_key", { ascending: true })
@@ -2395,6 +2765,42 @@ async function loadSupabaseEvents(userId: string) {
   }
 
   return ((data ?? []) as AgendaEventRow[]).map(rowToEvent);
+}
+
+async function loadSupabaseEventTemplates(userId: string) {
+  const { data, error } = await supabase
+    .from("agenda_event_templates")
+    .select(
+      "user_id,id,label,title,description,location,reminder,start_time,category_id,icon,tasks,sort_order,is_default",
+    )
+    .eq("user_id", userId)
+    .order("sort_order", { ascending: true })
+    .order("label", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return sortEventTemplates(
+    ((data ?? []) as EventTemplateRow[]).map(rowToEventTemplate),
+  );
+}
+
+async function saveSupabaseEventTemplates(
+  templates: EventTemplate[],
+  userId: string,
+) {
+  if (templates.length === 0) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from("agenda_event_templates")
+    .upsert(templates.map((template) => eventTemplateToRow(template, userId)));
+
+  if (error) {
+    throw error;
+  }
 }
 
 async function saveSupabaseEvent(event: AgendaEvent, userId: string) {
@@ -2415,18 +2821,6 @@ async function saveSupabaseEvents(events: AgendaEvent[], userId: string) {
   const { error } = await supabase
     .from("agenda_events")
     .upsert(events.map((event) => eventToRow(event, userId)));
-
-  if (error) {
-    throw error;
-  }
-}
-
-async function deleteSupabaseEvent(eventId: string, userId: string) {
-  const { error } = await supabase
-    .from("agenda_events")
-    .delete()
-    .eq("id", eventId)
-    .eq("user_id", userId);
 
   if (error) {
     throw error;
@@ -2483,18 +2877,6 @@ async function replaceSupabaseEventTasks(
   await saveSupabaseEventTasks(tasks, userId);
 }
 
-async function deleteSupabaseEventTasks(eventId: string, userId: string) {
-  const { error } = await supabase
-    .from("agenda_event_tasks")
-    .delete()
-    .eq("event_id", eventId)
-    .eq("user_id", userId);
-
-  if (error) {
-    throw error;
-  }
-}
-
 export default function HomeScreen() {
   const { isDark } = useAppTheme();
   const styles = useMemo(() => getAgendaStyles(isDark), [isDark]);
@@ -2511,10 +2893,15 @@ export default function HomeScreen() {
   const [events, setEvents] = useState(() => createInitialEvents(today));
   const [categories, setCategories] = useState(() => createDefaultCategories());
   const [eventTasks, setEventTasks] = useState<AgendaEventTask[]>([]);
+  const [eventTemplates, setEventTemplates] = useState(() =>
+    createDefaultEventTemplates(),
+  );
   const [hasLoadedStoredEvents, setHasLoadedStoredEvents] = useState(false);
   const [hasLoadedStoredCategories, setHasLoadedStoredCategories] =
     useState(false);
   const [hasLoadedStoredTasks, setHasLoadedStoredTasks] = useState(false);
+  const [hasLoadedStoredTemplates, setHasLoadedStoredTemplates] =
+    useState(false);
   const [syncStatus, setSyncStatus] = useState("Cargando local...");
   const [session, setSession] = useState<Session | null>(null);
   const [hasLoadedSession, setHasLoadedSession] = useState(false);
@@ -2535,6 +2922,7 @@ export default function HomeScreen() {
   const [isDayDetailVisible, setIsDayDetailVisible] = useState(false);
   const [isCalendarVisible, setIsCalendarVisible] = useState(false);
   const [isFiltersExpanded, setIsFiltersExpanded] = useState(false);
+  const [isQuickMoveExpanded, setIsQuickMoveExpanded] = useState(false);
   const [isCategoryManagerVisible, setIsCategoryManagerVisible] =
     useState(false);
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
@@ -2545,6 +2933,9 @@ export default function HomeScreen() {
     useState<CategoryFormErrors>({});
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [quickDrag, setQuickDrag] = useState<QuickDragState | null>(null);
+  const [lastDeletedEvent, setLastDeletedEvent] =
+    useState<DeletedEventUndo | null>(null);
+  const [appToast, setAppToast] = useState<AppToast | null>(null);
   const [pendingDeleteEventId, setPendingDeleteEventId] = useState<string | null>(null);
   const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
   const [isSignOutConfirmVisible, setIsSignOutConfirmVisible] = useState(false);
@@ -2561,6 +2952,10 @@ export default function HomeScreen() {
   const quickDragRef = useRef<QuickDragState | null>(null);
   const quickDropTargetRefs = useRef<Record<string, View | null>>({});
   const quickDropZonesRef = useRef<DayDropZone[]>([]);
+  const undoDeleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+  const toastTranslateY = useRef(new Animated.Value(18)).current;
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 
   useEffect(() => {
@@ -2641,6 +3036,87 @@ export default function HomeScreen() {
     setIsSyncTooltipVisible(false);
   }
 
+  function hideAppToast() {
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+      toastTimeoutRef.current = null;
+    }
+
+    toastOpacity.stopAnimation();
+    toastTranslateY.stopAnimation();
+    Animated.parallel([
+      Animated.timing(toastOpacity, {
+        duration: 170,
+        toValue: 0,
+        useNativeDriver: true,
+      }),
+      Animated.timing(toastTranslateY, {
+        duration: 170,
+        toValue: 18,
+        useNativeDriver: true,
+      }),
+    ]).start(({ finished }) => {
+      if (finished) {
+        setAppToast(null);
+      }
+    });
+  }
+
+  function showAppToast(
+    toast: Omit<AppToast, "id">,
+    duration = toast.duration ?? 3600,
+  ) {
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+      toastTimeoutRef.current = null;
+    }
+
+    const nextToast: AppToast = {
+      ...toast,
+      duration,
+      id: `${Date.now()}-${toast.title}`,
+    };
+
+    setAppToast(nextToast);
+    toastOpacity.stopAnimation();
+    toastTranslateY.stopAnimation();
+    toastOpacity.setValue(0);
+    toastTranslateY.setValue(18);
+
+    Animated.parallel([
+      Animated.timing(toastOpacity, {
+        duration: 210,
+        toValue: 1,
+        useNativeDriver: true,
+      }),
+      Animated.spring(toastTranslateY, {
+        damping: 18,
+        mass: 0.8,
+        stiffness: 180,
+        toValue: 0,
+        useNativeDriver: true,
+      }),
+    ]).start();
+
+    AccessibilityInfo.announceForAccessibility(
+      `${nextToast.title}${nextToast.message ? `. ${nextToast.message}` : ""}`,
+    );
+
+    if (duration > 0) {
+      toastTimeoutRef.current = setTimeout(() => {
+        hideAppToast();
+      }, duration);
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const [activeCategoryFilter, setActiveCategoryFilter] =
     useState<CategoryFilter>("all");
   const [activeStatusFilter, setActiveStatusFilter] =
@@ -2665,6 +3141,7 @@ export default function HomeScreen() {
   const eventsRef = useRef(events);
   const categoriesRef = useRef(categories);
   const eventTasksRef = useRef(eventTasks);
+  const eventTemplatesRef = useRef(eventTemplates);
 
   useEffect(() => {
     eventsRef.current = events;
@@ -2677,6 +3154,10 @@ export default function HomeScreen() {
   useEffect(() => {
     eventTasksRef.current = eventTasks;
   }, [eventTasks]);
+
+  useEffect(() => {
+    eventTemplatesRef.current = eventTemplates;
+  }, [eventTemplates]);
 
   useEffect(() => {
     let isMounted = true;
@@ -2751,21 +3232,70 @@ export default function HomeScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    async function hydrateEventTemplates() {
+      const storedTemplates = await loadStoredEventTemplates();
+
+      if (!isMounted) {
+        return;
+      }
+
+      setEventTemplates(
+        await ensureDefaultEventTemplates(
+          storedTemplates ?? createDefaultEventTemplates(),
+        ),
+      );
+      setHasLoadedStoredTemplates(true);
+    }
+
+    hydrateEventTemplates();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       let isActive = true;
 
-      async function refreshStoredCategories() {
-        const storedCategories = await loadStoredCategories();
+      async function refreshStoredData() {
+        const [
+          storedCategories,
+          storedEvents,
+          storedTasks,
+          storedTemplates,
+        ] = await Promise.all([
+          loadStoredCategories(),
+          loadStoredEvents(),
+          loadStoredEventTasks(),
+          loadStoredEventTemplates(),
+        ]);
 
-        if (!isActive || !storedCategories) {
+        if (!isActive) {
           return;
         }
 
-        setCategories(await ensureDefaultCategories(storedCategories));
+        if (storedCategories) {
+          setCategories(await ensureDefaultCategories(storedCategories));
+        }
+
+        if (storedEvents) {
+          setEvents(storedEvents);
+        }
+
+        if (storedTasks) {
+          setEventTasks(storedTasks);
+        }
+
+        if (storedTemplates) {
+          setEventTemplates(await ensureDefaultEventTemplates(storedTemplates));
+        }
       }
 
-      void refreshStoredCategories();
+      void refreshStoredData();
 
       return () => {
         isActive = false;
@@ -2796,6 +3326,7 @@ export default function HomeScreen() {
       !hasLoadedStoredEvents ||
       !hasLoadedStoredCategories ||
       !hasLoadedStoredTasks ||
+      !hasLoadedStoredTemplates ||
       typeof userId !== "string"
     ) {
       return;
@@ -2819,13 +3350,23 @@ export default function HomeScreen() {
         );
         const remoteEvents = await loadSupabaseEvents(authenticatedUserId);
         const remoteTasks = await loadSupabaseEventTasks(authenticatedUserId);
+        const remoteTemplates =
+          await loadSupabaseEventTemplates(authenticatedUserId);
+        const nextTemplates = await ensureDefaultEventTemplates(
+          remoteTemplates.length > 0
+            ? remoteTemplates
+            : eventTemplatesRef.current,
+          authenticatedUserId,
+        );
 
         if (!isMounted) {
           return;
         }
 
         setCategories(nextCategories);
+        setEventTemplates(nextTemplates);
         saveStoredCategories(nextCategories);
+        saveStoredEventTemplates(nextTemplates);
 
         if (remoteEvents.length > 0) {
           setEvents(remoteEvents);
@@ -2839,11 +3380,18 @@ export default function HomeScreen() {
               authenticatedUserId,
             );
           }
+          if (remoteTemplates.length === 0) {
+            await saveSupabaseEventTemplates(
+              nextTemplates,
+              authenticatedUserId,
+            );
+          }
           setSyncStatus("Sincronizado");
           return;
         }
 
         await saveSupabaseCategories(nextCategories, authenticatedUserId);
+        await saveSupabaseEventTemplates(nextTemplates, authenticatedUserId);
         await saveSupabaseEvents(eventsRef.current, authenticatedUserId);
         await saveSupabaseEventTasks(eventTasksRef.current, authenticatedUserId);
         if (remoteTasks.length > 0) {
@@ -2869,6 +3417,7 @@ export default function HomeScreen() {
     hasLoadedStoredCategories,
     hasLoadedStoredEvents,
     hasLoadedStoredTasks,
+    hasLoadedStoredTemplates,
     session?.user.id,
   ]);
 
@@ -2897,6 +3446,14 @@ export default function HomeScreen() {
   }, [eventTasks, hasLoadedStoredTasks]);
 
   useEffect(() => {
+    if (!hasLoadedStoredTemplates) {
+      return;
+    }
+
+    saveStoredEventTemplates(eventTemplates);
+  }, [eventTemplates, hasLoadedStoredTemplates]);
+
+  useEffect(() => {
     if (Platform.OS !== "android") {
       return;
     }
@@ -2917,9 +3474,21 @@ export default function HomeScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (undoDeleteTimeoutRef.current) {
+        clearTimeout(undoDeleteTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const currentWeekStart = useMemo(
     () => addDays(startOfWeek(today), weekOffset * 7),
     [today, weekOffset],
+  );
+  const visibleEvents = useMemo(
+    () => events.filter((event) => !event.deletedAt),
+    [events],
   );
   const calendarDays = useMemo(() => {
     const firstCalendarDay = startOfWeek(startOfMonth(calendarMonthDate));
@@ -2927,7 +3496,7 @@ export default function HomeScreen() {
     return Array.from({ length: 42 }, (_, index) => {
       const date = addDays(firstCalendarDay, index);
       const dateKey = toDateKey(date);
-      const dayEvents = events
+      const dayEvents = visibleEvents
         .filter(
           (event) =>
             (activeCategoryFilter === "all" ||
@@ -2941,17 +3510,41 @@ export default function HomeScreen() {
       const eventDots = dayEvents.slice(0, 3).map((event) =>
         event.completed ? "#9CA3AF" : event.color,
       );
+      const completedCount = dayEvents.filter((event) => event.completed).length;
+      const pendingCount = dayEvents.length - completedCount;
+      const overdueCount = dayEvents.filter((event) => {
+        if (event.completed) {
+          return false;
+        }
+
+        return (
+          getReminderVisualInfo(
+            event,
+            getOccurrenceStartForDate(event, date),
+            currentTime,
+          ).state === "overdue"
+        );
+      }).length;
 
       return {
+        completedCount,
         date,
         dateKey,
         eventCount: dayEvents.length,
         eventDots,
         events: dayEvents,
         isCurrentMonth: date.getMonth() === calendarMonthDate.getMonth(),
+        overdueCount,
+        pendingCount,
       };
     });
-  }, [activeCategoryFilter, activeStatusFilter, calendarMonthDate, events]);
+  }, [
+    activeCategoryFilter,
+    activeStatusFilter,
+    calendarMonthDate,
+    currentTime,
+    visibleEvents,
+  ]);
 
   const calendarPreviewDay = useMemo(
     () =>
@@ -2960,12 +3553,10 @@ export default function HomeScreen() {
       calendarDays[0],
     [calendarDays, calendarPreviewDateKey, today],
   );
-  const calendarPreviewEvents = calendarPreviewDay?.events.slice(0, 2) ?? [];
-  const calendarPreviewExtraCount = Math.max(
-    (calendarPreviewDay?.eventCount ?? 0) - calendarPreviewEvents.length,
-    0,
-  );
   const calendarPreviewDate = calendarPreviewDay?.date ?? today;
+  const calendarPreviewPendingCount = calendarPreviewDay?.pendingCount ?? 0;
+  const calendarPreviewCompletedCount = calendarPreviewDay?.completedCount ?? 0;
+  const calendarPreviewOverdueCount = calendarPreviewDay?.overdueCount ?? 0;
 
   const weekDays = useMemo(
     () =>
@@ -2977,7 +3568,7 @@ export default function HomeScreen() {
           label: WEEK_DAYS[index],
           date,
           dateKey,
-          events: events
+          events: visibleEvents
             .filter((event) => eventOccursOnDate(event, date))
             .filter(
               (event) =>
@@ -2990,7 +3581,7 @@ export default function HomeScreen() {
             ),
         };
       }),
-    [activeCategoryFilter, activeStatusFilter, currentWeekStart, events],
+    [activeCategoryFilter, activeStatusFilter, currentWeekStart, visibleEvents],
   );
   const categoriesById = useMemo(() => getCategoriesById(categories), [
     categories,
@@ -3027,9 +3618,57 @@ export default function HomeScreen() {
     [tasksByEventId],
   );
   const selectedDay = weekDays[selectedDayIndex];
+  const selectedDayCurrentHour = isSameDay(selectedDay.date, currentTime)
+    ? currentTime.getHours()
+    : null;
+  const selectedDayNowLineTop =
+    selectedDayCurrentHour === null
+      ? 0
+      : Math.min(
+          TIMELINE_HOUR_SLOT_HEIGHT + 8,
+          12 + (currentTime.getMinutes() / 60) * TIMELINE_HOUR_SLOT_HEIGHT,
+        );
+  const selectedDayEventsByHour = useMemo(() => {
+    return selectedDay.events.reduce(
+      (eventsByHour, event) => {
+        const { hour } = splitTime(event.startTime);
+        const hourKey = Number(hour);
+
+        return {
+          ...eventsByHour,
+          [hourKey]: [...(eventsByHour[hourKey] ?? []), event],
+        };
+      },
+      {} as Record<number, AgendaEvent[]>,
+    );
+  }, [selectedDay.events]);
+  const selectedDayTimelineHours = useMemo(() => {
+    const eventHours = selectedDay.events.map(({ startTime }) =>
+      Number(splitTime(startTime).hour),
+    );
+    const anchorHours = [
+      ...eventHours,
+      ...(selectedDayCurrentHour !== null ? [selectedDayCurrentHour] : []),
+    ];
+
+    if (anchorHours.length === 0) {
+      return Array.from({ length: 10 }, (_, index) => index + 8);
+    }
+
+    const startHour = Math.max(0, Math.min(...anchorHours) - 1);
+    const endHour = Math.min(
+      23,
+      Math.max(Math.max(...anchorHours) + 1, startHour + 5),
+    );
+
+    return Array.from(
+      { length: endHour - startHour + 1 },
+      (_, index) => startHour + index,
+    );
+  }, [selectedDay.events, selectedDayCurrentHour]);
   const activeQuickDragEventId = quickDrag?.eventId ?? null;
   const quickDragEvent = quickDrag
-    ? events.find((event) => event.id === quickDrag.eventId)
+    ? visibleEvents.find((event) => event.id === quickDrag.eventId)
     : undefined;
   const totalEvents = weekDays.reduce(
     (total, day) => total + day.events.length,
@@ -3039,7 +3678,7 @@ export default function HomeScreen() {
     () =>
       Array.from({ length: 7 }, (_, index) => {
         const date = addDays(currentWeekStart, index);
-        const dayEvents = events
+        const dayEvents = visibleEvents
           .filter((event) => eventOccursOnDate(event, date))
           .sort((firstEvent, secondEvent) =>
             firstEvent.startTime.localeCompare(secondEvent.startTime),
@@ -3052,19 +3691,19 @@ export default function HomeScreen() {
           label: WEEK_DAYS[index],
         };
       }),
-    [currentWeekStart, events],
+    [currentWeekStart, visibleEvents],
   );
   const allWeekOccurrences = useMemo(
     () =>
       getEventOccurrencesBetween(
-        events,
+        visibleEvents,
         currentWeekStart,
         addDays(currentWeekStart, 6),
       ),
-    [currentWeekStart, events],
+    [currentWeekStart, visibleEvents],
   );
   const weekSummaryEvents = useMemo(() => {
-    const categoryFilteredEvents = events.filter(
+    const categoryFilteredEvents = visibleEvents.filter(
       (event) =>
         activeCategoryFilter === "all" ||
         event.category === activeCategoryFilter,
@@ -3075,7 +3714,7 @@ export default function HomeScreen() {
       currentWeekStart,
       addDays(currentWeekStart, 6),
     );
-  }, [activeCategoryFilter, currentWeekStart, events]);
+  }, [activeCategoryFilter, currentWeekStart, visibleEvents]);
   const completedWeekEvents = weekSummaryEvents.filter(
     ({ event }) => event.completed,
   ).length;
@@ -3145,8 +3784,8 @@ export default function HomeScreen() {
         )
       : 0;
   const todayOccurrences = useMemo(
-    () => getEventOccurrencesBetween(events, currentTime, currentTime),
-    [currentTime, events],
+    () => getEventOccurrencesBetween(visibleEvents, currentTime, currentTime),
+    [currentTime, visibleEvents],
   );
   const todayCompletedEvents = todayOccurrences.filter(
     ({ event }) => event.completed,
@@ -3173,7 +3812,11 @@ export default function HomeScreen() {
       )
     : null;
   const overdueReminderCount = useMemo(() => {
-    return getEventOccurrencesBetween(events, addDays(currentTime, -1), currentTime)
+    return getEventOccurrencesBetween(
+      visibleEvents,
+      addDays(currentTime, -1),
+      currentTime,
+    )
       .filter(({ event, occurrenceDate }) => {
         if (event.completed) {
           return false;
@@ -3184,7 +3827,7 @@ export default function HomeScreen() {
           "overdue"
         );
       }).length;
-  }, [currentTime, events]);
+  }, [currentTime, visibleEvents]);
   const todaySummaryLabel =
     todayOccurrences.length === 0
       ? "Sin planes guardados para hoy"
@@ -3232,18 +3875,13 @@ export default function HomeScreen() {
   );
   const upcomingEvents = useMemo(() => {
     return getEventOccurrencesBetween(
-      events,
+      visibleEvents,
       today,
       upcomingWindowEnd,
     ).filter(({ occurrenceDate }) => occurrenceDate >= today);
-  }, [events, today, upcomingWindowEnd]);
-  const upcomingPreviewEvents = upcomingEvents.slice(0, 3);
-  const upcomingExtraCount = Math.max(
-    upcomingEvents.length - upcomingPreviewEvents.length,
-    0,
-  );
+  }, [visibleEvents, today, upcomingWindowEnd]);
   const scopedOccurrences = useMemo(() => {
-    const categoryFilteredEvents = events.filter(
+    const categoryFilteredEvents = visibleEvents.filter(
       (event) =>
         (activeCategoryFilter === "all" ||
           event.category === activeCategoryFilter) &&
@@ -3271,7 +3909,7 @@ export default function HomeScreen() {
     activeCategoryFilter,
     activeStatusFilter,
     currentWeekStart,
-    events,
+    visibleEvents,
     searchScope,
     selectedDay.date,
   ]);
@@ -3297,7 +3935,7 @@ export default function HomeScreen() {
     searchQuery,
   ]);
   const selectedDetailEvent = selectedEventId
-    ? events.find((event) => event.id === selectedEventId) ?? null
+    ? visibleEvents.find((event) => event.id === selectedEventId) ?? null
     : null;
   const selectedDetailOccurrenceDate = selectedDetailEvent
     ? selectedEventOccurrenceDate ??
@@ -3315,6 +3953,14 @@ export default function HomeScreen() {
   const selectedDetailTasks = selectedDetailEvent
     ? getTasksForEvent(selectedDetailEvent.id)
     : [];
+  const selectedDetailTaskStats = getEventTaskStats(selectedDetailTasks);
+  const selectedDetailTaskProgress =
+    selectedDetailTaskStats.total > 0
+      ? selectedDetailTaskStats.completed / selectedDetailTaskStats.total
+      : 0;
+  const selectedDetailCategory = selectedDetailEvent
+    ? getCategoryForEvent(selectedDetailEvent)
+    : getCategory(FALLBACK_CATEGORY_ID);
   const searchScopeLabel =
     SEARCH_SCOPES.find((scope) => scope.value === searchScope)?.label ??
     "Semana";
@@ -3455,17 +4101,19 @@ export default function HomeScreen() {
     setIsCalendarVisible(false);
   }
 
-  function openNewEventModal(date = selectedDay.date) {
+  function openNewEventModal(date = selectedDay.date, startTime?: string) {
     const defaultCategory = getCategory(FALLBACK_CATEGORY_ID);
+    const emptyForm = createEmptyForm(date);
 
     setIsDayDetailVisible(false);
     setIsEventDetailVisible(false);
     setSelectedEventOccurrenceDate(null);
     setEditingEventId(null);
     setForm({
-      ...createEmptyForm(date),
+      ...emptyForm,
       category: defaultCategory.id,
       color: defaultCategory.color,
+      startTime: startTime ?? emptyForm.startTime,
       tone: defaultCategory.tone,
     });
     setFormErrors({});
@@ -3722,6 +4370,12 @@ export default function HomeScreen() {
       currentEvents.map((event) => (event.id === eventId ? savedEvent : event)),
     );
     setSelectedDayIndex(targetDayIndex);
+    showAppToast({
+      icon: "swap-horizontal-outline",
+      message: `${savedEvent.title} · ${FULL_DATE_FORMATTER.format(targetDate)}`,
+      title: "Evento movido",
+      variant: "success",
+    });
     setSyncStatus("Sincronizando...");
 
     try {
@@ -3734,6 +4388,12 @@ export default function HomeScreen() {
       setSyncStatus("Sincronizado");
     } catch (error) {
       console.warn("No se pudo mover el evento en Supabase", error);
+      showAppToast({
+        icon: "cloud-offline-outline",
+        message: "El cambio queda guardado en local.",
+        title: "Sin conexión con la nube",
+        variant: "warning",
+      });
       setSyncStatus("Modo local");
     }
   }
@@ -4099,6 +4759,12 @@ export default function HomeScreen() {
     }
 
     closeCategoryManager();
+    showAppToast({
+      icon: existingCategory ? "pricetag-outline" : "add-circle-outline",
+      message: nextCategory.label,
+      title: existingCategory ? "CategorÃ­a actualizada" : "CategorÃ­a creada",
+      variant: "success",
+    });
     setSyncStatus("Sincronizando...");
 
     try {
@@ -4114,6 +4780,12 @@ export default function HomeScreen() {
       setSyncStatus("Sincronizado");
     } catch (error) {
       console.warn("No se pudo guardar la categoría en Supabase", error);
+      showAppToast({
+        icon: "cloud-offline-outline",
+        message: "Se ha guardado en este dispositivo.",
+        title: "Sin conexión con la nube",
+        variant: "warning",
+      });
       setSyncStatus("Modo local");
     }
   }
@@ -4158,6 +4830,12 @@ export default function HomeScreen() {
       closeCategoryManager();
     }
 
+    showAppToast({
+      icon: "trash-outline",
+      message: "Los eventos se han reasignado a Personal.",
+      title: "Categoría eliminada",
+      variant: "warning",
+    });
     setSyncStatus("Sincronizando...");
 
     try {
@@ -4171,6 +4849,12 @@ export default function HomeScreen() {
       setSyncStatus("Sincronizado");
     } catch (error) {
       console.warn("No se pudo borrar la categoría en Supabase", error);
+      showAppToast({
+        icon: "cloud-offline-outline",
+        message: "El cambio queda guardado en local.",
+        title: "Sin conexión con la nube",
+        variant: "warning",
+      });
       setSyncStatus("Modo local");
     }
   }
@@ -4265,8 +4949,16 @@ export default function HomeScreen() {
 
     if (nextErrors.title) {
       setFormErrors(nextErrors);
+      showAppToast({
+        icon: "alert-circle-outline",
+        message: "AÃ±ade un tÃ­tulo antes de guardar.",
+        title: "Falta completar el evento",
+        variant: "danger",
+      });
       return;
     }
+
+    const isEditingEvent = Boolean(editingEventId);
 
     let savedEvent: AgendaEvent = {
       id: editingEventId ?? `${Date.now()}`,
@@ -4327,6 +5019,13 @@ export default function HomeScreen() {
     setEditingEventId(null);
     setFormTasks([]);
     setTaskDraft("");
+    void playAgendaActionFeedback(isEditingEvent ? "light" : "success");
+    showAppToast({
+      icon: isEditingEvent ? "checkmark-done-outline" : "calendar-outline",
+      message: savedEvent.title,
+      title: isEditingEvent ? "Evento actualizado" : "Evento creado",
+      variant: "success",
+    });
     setSyncStatus("Sincronizando...");
 
     try {
@@ -4340,6 +5039,12 @@ export default function HomeScreen() {
       setSyncStatus("Sincronizado");
     } catch (error) {
       console.warn("No se pudo guardar el evento en Supabase", error);
+      showAppToast({
+        icon: "cloud-offline-outline",
+        message: "El evento se ha guardado en este dispositivo.",
+        title: "Sin conexiÃ³n con la nube",
+        variant: "warning",
+      });
       setSyncStatus("Modo local");
     }
   }
@@ -4397,13 +5102,41 @@ export default function HomeScreen() {
     const deletedEvent = events.find((event) => event.id === eventId);
     const userId = session?.user.id;
 
+    if (!deletedEvent) {
+      return;
+    }
+
+    const deletedAt = new Date().toISOString();
+    const deletedTasks = getTasksForEvent(eventId);
+    const trashedEvent: AgendaEvent = {
+      ...deletedEvent,
+      deletedAt,
+      notificationId: undefined,
+    };
+
     await cancelEventNotification(deletedEvent?.notificationId);
     setEvents((currentEvents) =>
-      currentEvents.filter((event) => event.id !== eventId),
+      currentEvents.map((event) =>
+        event.id === eventId ? trashedEvent : event,
+      ),
     );
-    setEventTasks((currentTasks) =>
-      currentTasks.filter((task) => task.eventId !== eventId),
-    );
+    setLastDeletedEvent({ event: deletedEvent, tasks: deletedTasks });
+    if (undoDeleteTimeoutRef.current) {
+      clearTimeout(undoDeleteTimeoutRef.current);
+    }
+    undoDeleteTimeoutRef.current = setTimeout(() => {
+      setLastDeletedEvent(null);
+      undoDeleteTimeoutRef.current = null;
+    }, 6000);
+    void playAgendaActionFeedback("warning");
+    showAppToast({
+      action: "undo-delete",
+      duration: 6000,
+      icon: "trash-outline",
+      message: deletedEvent.title,
+      title: "Evento movido a papelera",
+      variant: "warning",
+    });
     setSyncStatus("Sincronizando...");
 
     try {
@@ -4412,11 +5145,80 @@ export default function HomeScreen() {
         return;
       }
 
-      await deleteSupabaseEventTasks(eventId, userId);
-      await deleteSupabaseEvent(eventId, userId);
+      await saveSupabaseEvent(trashedEvent, userId);
       setSyncStatus("Sincronizado");
     } catch (error) {
       console.warn("No se pudo borrar el evento en Supabase", error);
+      showAppToast({
+        action: "undo-delete",
+        duration: 6000,
+        icon: "cloud-offline-outline",
+        message: "Se ha borrado solo en este dispositivo.",
+        title: "Sin conexión con la nube",
+        variant: "warning",
+      });
+      setSyncStatus("Modo local");
+    }
+  }
+
+  async function undoDeleteEvent() {
+    if (!lastDeletedEvent) {
+      return;
+    }
+
+    const restoredEvent: AgendaEvent = {
+      ...lastDeletedEvent.event,
+      deletedAt: undefined,
+    };
+    const restoredTasks = lastDeletedEvent.tasks;
+    const userId = session?.user.id;
+
+    if (undoDeleteTimeoutRef.current) {
+      clearTimeout(undoDeleteTimeoutRef.current);
+      undoDeleteTimeoutRef.current = null;
+    }
+
+    setLastDeletedEvent(null);
+    setEvents((currentEvents) =>
+      currentEvents.some((event) => event.id === restoredEvent.id)
+        ? currentEvents.map((event) =>
+            event.id === restoredEvent.id ? restoredEvent : event,
+          )
+        : [...currentEvents, restoredEvent],
+    );
+    setEventTasks((currentTasks) => {
+      const currentTaskIds = new Set(currentTasks.map((task) => task.id));
+      return [
+        ...currentTasks,
+        ...restoredTasks.filter((task) => !currentTaskIds.has(task.id)),
+      ];
+    });
+    showAppToast({
+      icon: "return-down-back-outline",
+      message: restoredEvent.title,
+      title: "Evento restaurado",
+      variant: "success",
+    });
+    void playAgendaActionFeedback("success");
+    setSyncStatus("Sincronizando...");
+
+    try {
+      if (!userId) {
+        setSyncStatus("Modo local");
+        return;
+      }
+
+      await saveSupabaseEvent(restoredEvent, userId);
+      await saveSupabaseEventTasks(restoredTasks, userId);
+      setSyncStatus("Sincronizado");
+    } catch (error) {
+      console.warn("No se pudo restaurar el evento en Supabase", error);
+      showAppToast({
+        icon: "cloud-offline-outline",
+        message: "La restauración queda guardada en local.",
+        title: "Sin conexión con la nube",
+        variant: "warning",
+      });
       setSyncStatus("Modo local");
     }
   }
@@ -4430,6 +5232,7 @@ export default function HomeScreen() {
       ...event,
       id: generateId(),
       completed: false,
+      deletedAt: undefined,
       notificationId: undefined,
     };
     const duplicatedTasks = getTasksForEvent(event.id).map((task, index) => ({
@@ -4442,6 +5245,13 @@ export default function HomeScreen() {
 
     setEvents((currentEvents) => [...currentEvents, newEvent]);
     setEventTasks((currentTasks) => [...currentTasks, ...duplicatedTasks]);
+    void playAgendaActionFeedback("light");
+    showAppToast({
+      icon: "copy-outline",
+      message: newEvent.title,
+      title: "Evento duplicado",
+      variant: "success",
+    });
     setSyncStatus("Sincronizando...");
 
     const userId = session?.user.id;
@@ -4465,10 +5275,22 @@ export default function HomeScreen() {
           setSyncStatus("Sincronizado");
         } catch (error) {
           console.warn("No se pudo duplicar el evento en Supabase", error);
+          showAppToast({
+            icon: "cloud-offline-outline",
+            message: "El duplicado queda guardado en local.",
+            title: "Sin conexión con la nube",
+            variant: "warning",
+          });
           setSyncStatus("Modo local");
         }
       },
     ).catch(() => {
+        showAppToast({
+          icon: "cloud-offline-outline",
+          message: "No se pudo programar el aviso, pero el evento se creó.",
+          title: "Aviso no programado",
+          variant: "warning",
+        });
         setSyncStatus("Modo local");
     });
   }
@@ -4541,6 +5363,12 @@ export default function HomeScreen() {
     setEvents((currentEvents) =>
       currentEvents.map((event) => (event.id === eventId ? updated : event)),
     );
+    showAppToast({
+      icon: nextCompleted ? "checkmark-circle-outline" : "refresh-outline",
+      message: updated.title,
+      title: nextCompleted ? "Evento completado" : "Evento reabierto",
+      variant: nextCompleted ? "success" : "info",
+    });
     setSyncStatus("Sincronizando...");
 
     try {
@@ -4553,6 +5381,12 @@ export default function HomeScreen() {
       setSyncStatus("Sincronizado");
     } catch (error) {
       console.warn("No se pudo guardar el evento en Supabase", error);
+      showAppToast({
+        icon: "cloud-offline-outline",
+        message: "El cambio queda guardado en local.",
+        title: "Sin conexión con la nube",
+        variant: "warning",
+      });
       setSyncStatus("Modo local");
     }
   }
@@ -4893,39 +5727,6 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        <View style={styles.weekControls}>
-          <Pressable
-            accessibilityLabel="Semana anterior"
-            style={styles.arrowButton}
-            onPress={() => setWeekOffset((offset) => offset - 1)}
-          >
-            <Ionicons name="chevron-back" size={22} color={primaryIconColor} />
-          </Pressable>
-
-          <Pressable
-            accessibilityHint="Abre un calendario para saltar a cualquier día"
-            accessibilityLabel={`Resumen de la semana: ${totalEvents} planes. Abrir calendario`}
-            style={styles.weekSummary}
-            onPress={openCalendar}
-          >
-            <Text style={styles.weekSummaryValue}>
-              {totalEvents} planes esta semana
-            </Text>
-            <Text style={styles.weekSummaryProgress}>
-              {pendingWeekEvents} pendientes · {completedWeekEvents} completados
-            </Text>
-            <Text style={styles.weekSummaryHint}>Toca para ver</Text>
-          </Pressable>
-
-          <Pressable
-            accessibilityLabel="Semana siguiente"
-            style={styles.arrowButton}
-            onPress={() => setWeekOffset((offset) => offset + 1)}
-          >
-            <Ionicons name="chevron-forward" size={22} color={primaryIconColor} />
-          </Pressable>
-        </View>
-
         <View style={styles.todayHero}>
           <View style={styles.todayHeroHeader}>
             <View style={styles.todayHeroTitleBlock}>
@@ -5073,252 +5874,106 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        <View style={styles.activityPanel}>
-          <View style={styles.activityHeader}>
-            <View style={styles.activityHeaderText}>
-              <Text style={styles.sectionLabel}>Resumen</Text>
-              <Text style={styles.activityTitle}>Ritmo de la semana</Text>
-              <Text style={styles.activitySubtitle} numberOfLines={1}>
-                {formatWeekRange(currentWeekStart)} · {allWeekOccurrences.length}{" "}
-                {allWeekOccurrences.length === 1 ? "plan" : "planes"}
-              </Text>
+        <View style={styles.homeActionRow}>
+          <Pressable
+            accessibilityLabel="Crear evento"
+            style={[styles.homeActionButton, styles.homeActionButtonPrimary]}
+            onPress={() => openNewEventModal(selectedDay.date)}
+          >
+            <View style={styles.homeActionIcon}>
+              <Ionicons name="add" size={20} color="#FFFFFF" />
             </View>
-            <View style={styles.activityMonthBadge}>
-              <Text style={styles.activityMonthValue}>
-                {activityWeekCompletionPercent}%
-              </Text>
-              <Text style={styles.activityMonthLabel}>Semana</Text>
-            </View>
-          </View>
-
-          <View style={styles.activityStatsGrid}>
-            <View style={styles.activityStatCard}>
-              <Ionicons name="checkmark-done-outline" size={18} color="#3D8B7D" />
-              <Text style={styles.activityStatValue}>
-                {activityWeekCompletedEvents}/{allWeekOccurrences.length}
-              </Text>
-              <Text style={styles.activityStatLabel}>Eventos</Text>
-            </View>
-            <View style={styles.activityStatCard}>
-              <Ionicons name="list-outline" size={18} color="#4D74B8" />
-              <Text style={styles.activityStatValue}>
-                {activityWeekCompletedTasks}/{activityWeekTasks.length}
-              </Text>
-              <Text style={styles.activityStatLabel}>Tareas</Text>
-            </View>
-            <View style={styles.activityStatCard}>
-              <Ionicons
-                name={topActivityCategory.category.icon}
-                size={18}
-                color={topActivityCategory.category.color}
-              />
-              <Text style={styles.activityStatValue} numberOfLines={1}>
-                {topActivityCategory.count > 0
-                  ? topActivityCategory.category.label
-                  : "Sin datos"}
-              </Text>
-              <Text style={styles.activityStatLabel}>Categoría</Text>
-            </View>
-          </View>
-
-          <View style={styles.activityBarsRow}>
-            {activityWeekBars.map((day) => {
-              const hasEvents = day.events.length > 0;
-
-              return (
-                <View key={`${day.label}-${toDateKey(day.date)}`} style={styles.activityBarItem}>
-                  <View style={styles.activityBarTrack}>
-                    <View
-                      style={[
-                        styles.activityBarFill,
-                        {
-                          backgroundColor:
-                            day.events.length > 0 &&
-                            day.completedEvents === day.events.length
-                              ? "#3D8B7D"
-                              : hasEvents
-                                ? "#E05D5D"
-                                : "#D8CEC2",
-                          height: day.barHeight,
-                        },
-                      ]}
-                    />
-                  </View>
-                  <Text style={styles.activityBarLabel}>{day.label}</Text>
-                  <Text style={styles.activityBarCount}>
-                    {day.events.length}
-                  </Text>
-                </View>
-              );
-            })}
-          </View>
-
-          <View style={styles.activityInsightBox}>
-            <Ionicons name="sparkles-outline" size={18} color="#D28A2E" />
-            <Text style={styles.activityInsightText}>{activityInsight}</Text>
-          </View>
-
-          <View style={styles.activityActionsRow}>
-            <Pressable
-              style={styles.activitySearchButton}
-              onPress={() => openSearchPanel()}
-            >
-              <Ionicons
-                name={hasActiveFilters ? "options-outline" : "search-outline"}
-                size={18}
-                color="#FFFFFF"
-              />
-              <Text style={styles.activitySearchButtonText} numberOfLines={1}>
-                {hasActiveFilters ? filtersTriggerSubtitle : "Buscar y filtrar"}
-              </Text>
-            </Pressable>
-
-            {hasActiveFilters ? (
-              <Pressable
-                accessibilityLabel="Limpiar filtros"
-                style={styles.activityClearButton}
-                onPress={resetFilters}
+            <View style={styles.homeActionTextBlock}>
+              <Text
+                style={[
+                  styles.homeActionButtonText,
+                  styles.homeActionButtonTextPrimary,
+                ]}
+                numberOfLines={1}
               >
-                <Ionicons name="close" size={17} color={primaryIconColor} />
-              </Pressable>
-            ) : null}
-          </View>
+                Nuevo
+              </Text>
+              <Text
+                style={[
+                  styles.homeActionButtonMeta,
+                  styles.homeActionButtonMetaPrimary,
+                ]}
+                numberOfLines={1}
+              >
+                {selectedDay.label} {selectedDay.date.getDate()}
+              </Text>
+            </View>
+          </Pressable>
+
+          <Pressable
+            accessibilityLabel="Buscar y filtrar eventos"
+            style={styles.homeActionButton}
+            onPress={() => openSearchPanel()}
+          >
+            <Ionicons
+              name={hasActiveFilters ? "options-outline" : "search-outline"}
+              size={19}
+              color={primaryIconColor}
+            />
+            <View style={styles.homeActionTextBlock}>
+              <Text style={styles.homeActionButtonText} numberOfLines={1}>
+                {hasActiveFilters ? "Filtros" : "Buscar"}
+              </Text>
+              <Text style={styles.homeActionButtonMeta} numberOfLines={1}>
+                {hasActiveFilters
+                  ? filtersTriggerSubtitle
+                  : `${upcomingEvents.length} próximos`}
+              </Text>
+            </View>
+          </Pressable>
+
+          <Pressable
+            accessibilityLabel="Abrir calendario mensual"
+            style={styles.homeActionButton}
+            onPress={openCalendar}
+          >
+            <Ionicons name="calendar-outline" size={19} color={primaryIconColor} />
+            <View style={styles.homeActionTextBlock}>
+              <Text style={styles.homeActionButtonText} numberOfLines={1}>
+                Mes
+              </Text>
+              <Text style={styles.homeActionButtonMeta} numberOfLines={1}>
+                Saltar
+              </Text>
+            </View>
+          </Pressable>
         </View>
 
-        <View style={styles.upcomingPanel}>
-          <View style={styles.overviewHeader}>
-            <View style={styles.upcomingHeaderText}>
-              <Text style={styles.sectionLabel}>Próximos</Text>
-              <Text style={styles.upcomingSubtitle} numberOfLines={2}>
-                Siguientes {UPCOMING_WINDOW_DAYS} días · vista compacta
-              </Text>
-            </View>
-            {upcomingEvents.length > 3 ? (
-              <Pressable
-                style={styles.upcomingSeeAllButton}
-                onPress={() => openSearchPanel("all")}
-              >
-                <Text style={styles.upcomingSeeAllText}>Ver todos</Text>
-                <Ionicons name="arrow-forward" size={15} color="#4D74B8" />
-              </Pressable>
-            ) : null}
-          </View>
+        <View style={styles.weekControls}>
+          <Pressable
+            accessibilityLabel="Semana anterior"
+            style={styles.arrowButton}
+            onPress={() => setWeekOffset((offset) => offset - 1)}
+          >
+            <Ionicons name="chevron-back" size={22} color={primaryIconColor} />
+          </Pressable>
 
-          {upcomingEvents.length === 0 ? (
-            <AgendaEmptyState
-              actionLabel="Añadir evento"
-              compact
-              icon="calendar-clear-outline"
-              onAction={() => openNewEventModal(selectedDay.date)}
-              text={`No hay planes en los próximos ${UPCOMING_WINDOW_DAYS} días.`}
-              title="Todo despejado"
-            />
-          ) : (
-            <View style={styles.upcomingList}>
-              {upcomingPreviewEvents.map(({ event, occurrenceDate }) => (
-                <SwipeableEventRow
-                  key={`${event.id}-${toDateKey(occurrenceDate)}`}
-                  completed={event.completed}
-                  onComplete={() => {
-                    void toggleEventCompleted(event.id);
-                  }}
-                  onDelete={() => {
-                    requestDeleteEvent(event.id);
-                  }}
-                >
-                  <View
-                  style={[
-                    styles.upcomingItem,
-                    event.completed && styles.upcomingItemCompleted,
-                    !event.completed &&
-                      isSoonReminderState(
-                        getReminderVisualInfo(
-                          event,
-                          occurrenceDate,
-                          currentTime,
-                        ).state,
-                      ) &&
-                      styles.upcomingItemReminderSoon,
-                    !event.completed &&
-                      isCriticalReminderState(
-                        getReminderVisualInfo(
-                          event,
-                          occurrenceDate,
-                          currentTime,
-                        ).state,
-                      ) &&
-                      styles.upcomingItemReminderCritical,
-                  ]}
-                >
-                  <Pressable
-                    style={styles.upcomingItemMain}
-                    onPress={() => openEventDetail(event, occurrenceDate)}
-                  >
-                    <View
-                      style={[
-                        styles.compactIconDot,
-                        {
-                          backgroundColor: event.completed
-                            ? "#9CA3AF"
-                            : event.color,
-                        },
-                      ]}
-                    >
-                      <Ionicons
-                        name={getCategoryForEvent(event).icon}
-                        size={11}
-                        color="#FFFFFF"
-                      />
-                    </View>
-                    <View style={styles.upcomingItemBody}>
-                      <Text
-                        style={[
-                          styles.upcomingItemTitle,
-                          event.completed && styles.completedText,
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {event.title}
-                      </Text>
-                      <Text style={styles.upcomingItemMeta} numberOfLines={1}>
-                        {UPCOMING_DATE_FORMATTER.format(occurrenceDate)} ·{" "}
-                        {event.startTime}
-                        {event.location ? ` · ${event.location}` : ""}
-                        {getTasksForEvent(event.id).length > 0
-                          ? ` · ${getEventTaskStatsLabel(
-                              getTasksForEvent(event.id),
-                            )}`
-                          : ""}
-                        {event.completed ? " · Completado" : ""}
-                        {event.recurrence !== "none"
-                          ? ` · ${getRecurrenceSummaryLabel(event)}`
-                          : ""}
-                      </Text>
-                    </View>
-                    <ReminderBadge
-                      currentTime={currentTime}
-                      event={event}
-                      occurrenceDate={occurrenceDate}
-                    />
-                    <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
-                  </Pressable>
-                  </View>
-                </SwipeableEventRow>
-              ))}
-              {upcomingExtraCount > 0 ? (
-                <Pressable
-                  style={styles.upcomingMoreButton}
-                  onPress={() => openSearchPanel("all")}
-                >
-                  <Text style={styles.upcomingMoreText}>
-                    +{upcomingExtraCount}{" "}
-                    {upcomingExtraCount === 1 ? "plan más" : "planes más"}
-                  </Text>
-                  <Ionicons name="options-outline" size={16} color="#4D74B8" />
-                </Pressable>
-              ) : null}
-            </View>
-          )}
+          <Pressable
+            accessibilityHint="Abre un calendario para saltar a cualquier día"
+            accessibilityLabel={`Resumen de la semana: ${totalEvents} planes. Abrir calendario`}
+            style={styles.weekSummary}
+            onPress={openCalendar}
+          >
+            <Text style={styles.weekSummaryValue}>
+              {totalEvents} planes esta semana
+            </Text>
+            <Text style={styles.weekSummaryProgress}>
+              {pendingWeekEvents} pendientes · {completedWeekEvents} completados
+            </Text>
+          </Pressable>
+
+          <Pressable
+            accessibilityLabel="Semana siguiente"
+            style={styles.arrowButton}
+            onPress={() => setWeekOffset((offset) => offset + 1)}
+          >
+            <Ionicons name="chevron-forward" size={22} color={primaryIconColor} />
+          </Pressable>
         </View>
 
         <View style={styles.dayStrip}>
@@ -5396,170 +6051,306 @@ export default function HomeScreen() {
               title="Día libre"
             />
           ) : (
-            <View style={styles.eventList}>
-              {selectedDay.events.map((event) => (
-                <SwipeableEventRow
-                  key={event.id}
-                  completed={event.completed}
-                  onComplete={() => {
-                    void toggleEventCompleted(event.id);
-                  }}
-                  onDelete={() => {
-                    requestDeleteEvent(event.id);
-                  }}
-                >
+            <View style={styles.timeline}>
+              {selectedDayTimelineHours.map((hour) => {
+                const hourEvents = selectedDayEventsByHour[hour] ?? [];
+                const isCurrentHour = selectedDayCurrentHour === hour;
+                const slotTime = formatTimelineHour(hour);
+                const openSlot = () =>
+                  openNewEventModal(
+                    getDateWithTime(selectedDay.date, slotTime),
+                    slotTime,
+                  );
+                const nowLine = isCurrentHour ? (
                   <View
-                  style={[
-                    styles.eventCard,
-                    { backgroundColor: isDark ? "#1E293B" : event.tone },
-                    event.completed && styles.eventCardCompleted,
-                  ]}
-                >
-                  <View
+                    pointerEvents="none"
                     style={[
-                      styles.eventAccent,
-                      {
-                        backgroundColor: event.completed
-                          ? "#9CA3AF"
-                          : event.color,
-                      },
+                      styles.timelineNowLine,
+                      { top: selectedDayNowLineTop },
                     ]}
-                  />
-                  <View style={styles.eventCardMain}>
+                  >
+                    <View style={styles.timelineNowDot} />
+                    <View style={styles.timelineNowRule} />
+                    <Text style={styles.timelineNowText}>Ahora</Text>
+                  </View>
+                ) : null;
+
+                return (
+                  <View key={slotTime} style={styles.timelineHourRow}>
                     <Pressable
-                      style={styles.eventCardPressable}
-                      onPress={() =>
-                        openEventDetail(
-                          event,
-                          getOccurrenceStartForDate(event, selectedDay.date),
-                        )
-                      }
+                      accessibilityLabel={`Crear evento a las ${slotTime}`}
+                      style={styles.timelineHourLabelBlock}
+                      onPress={openSlot}
                     >
-                      <View style={styles.eventBody}>
-                        <View style={styles.eventTopRow}>
-                          <Text style={styles.eventTime}>
-                            {event.startTime}
-                          </Text>
-                          <View style={styles.topPills}>
-                            <View style={styles.categoryPill}>
-                              <Ionicons
-                                name={getCategoryForEvent(event).icon}
-                                size={13}
-                                color={event.color}
-                              />
-                              <Text
-                                style={[
-                                  styles.categoryText,
-                                  { color: event.color },
-                                ]}
-                              >
-                                {getCategoryForEvent(event).label}
-                              </Text>
-                            </View>
-                            <ReminderBadge
-                              currentTime={currentTime}
-                              event={event}
-                              occurrenceDate={getOccurrenceStartForDate(
-                                event,
-                                selectedDay.date,
-                              )}
-                              variant="inline"
-                            />
-                          </View>
-                        </View>
-                        <View style={styles.eventTitleRow}>
-                          <View
-                            style={[
-                              styles.eventIconBadge,
-                              { backgroundColor: event.color },
-                            ]}
-                          >
-                            <Ionicons
-                              name={getCategoryForEvent(event).icon}
-                              size={17}
-                              color="#FFFFFF"
-                            />
-                          </View>
-                          <Text
-                            style={[
-                              styles.eventTitle,
-                              event.completed && styles.completedText,
-                            ]}
-                          >
-                            {event.title}
-                          </Text>
+                      <Text
+                        style={[
+                          styles.timelineHourLabel,
+                          isCurrentHour && styles.timelineHourLabelNow,
+                        ]}
+                      >
+                        {slotTime}
+                      </Text>
+                    </Pressable>
+
+                    <View style={styles.timelineRail}>
+                      <View
+                        style={[
+                          styles.timelineDot,
+                          hourEvents.length > 0 && styles.timelineDotActive,
+                          isCurrentHour && styles.timelineDotNow,
+                        ]}
+                      />
+                    </View>
+
+                    {hourEvents.length === 0 ? (
+                      <Pressable
+                        accessibilityLabel={`Crear evento a las ${slotTime}`}
+                        style={styles.timelineHourSlot}
+                        onPress={openSlot}
+                      >
+                        {nowLine}
+                        <View style={styles.timelineEmptySlot}>
                           <Ionicons
-                            name="create-outline"
-                            size={18}
-                            color="#4B5563"
+                            name="add-circle-outline"
+                            size={16}
+                            color="#9CA3AF"
                           />
+                          <Text style={styles.timelineEmptyText}>
+                            Libre
+                          </Text>
                         </View>
-                        {event.location ? (
-                          <View style={styles.eventLocationRow}>
-                            <Ionicons
-                              name="location-outline"
-                              size={14}
-                              color={event.color}
-                            />
-                            <Text
-                              style={[
-                                styles.eventLocationText,
-                                { color: event.color },
-                              ]}
-                            >
-                              {event.location}
-                            </Text>
-                          </View>
-                        ) : null}
-                        <Text style={styles.eventDescription}>
-                          {event.description}
-                        </Text>
-                        <EventTaskPill
-                          color={event.color}
-                          tasks={getTasksForEvent(event.id)}
-                          variant="inline"
-                        />
-                        {event.recurrence !== "none" ? (
-                          <View style={styles.recurrencePill}>
-                            <Ionicons
-                              name="repeat-outline"
-                              size={13}
-                              color={event.color}
-                            />
-                            <Text
-                              style={[
-                                styles.recurrenceText,
-                                { color: event.color },
-                              ]}
-                            >
-                              {getRecurrenceSummaryLabel(event)}
-                            </Text>
-                          </View>
-                        ) : null}
+                      </Pressable>
+                    ) : (
+                      <View style={styles.timelineHourSlot}>
+                        {nowLine}
+                        <View style={styles.timelineEventStack}>
+                          {hourEvents.map((event) => {
+                            const occurrenceDate = getOccurrenceStartForDate(
+                              event,
+                              selectedDay.date,
+                            );
+                            const category = getCategoryForEvent(event);
+                            const eventTasksForItem = getTasksForEvent(
+                              event.id,
+                            );
+
+                            return (
+                              <SwipeableEventRow
+                                key={event.id}
+                                completed={event.completed}
+                                onComplete={() => {
+                                  void toggleEventCompleted(event.id);
+                                }}
+                                onDelete={() => {
+                                  requestDeleteEvent(event.id);
+                                }}
+                              >
+                                <View
+                                  style={[
+                                    styles.timelineEventCard,
+                                    {
+                                      borderLeftColor: event.completed
+                                        ? "#9CA3AF"
+                                        : event.color,
+                                    },
+                                    event.completed &&
+                                      styles.timelineEventCardCompleted,
+                                  ]}
+                                >
+                                  <Pressable
+                                    style={styles.timelineEventPressable}
+                                    onPress={() =>
+                                      openEventDetail(event, occurrenceDate)
+                                    }
+                                  >
+                                    <View
+                                      style={[
+                                        styles.timelineEventIcon,
+                                        {
+                                          backgroundColor: event.completed
+                                            ? "#9CA3AF"
+                                            : event.color,
+                                        },
+                                      ]}
+                                    >
+                                      <Ionicons
+                                        name={category.icon}
+                                        size={16}
+                                        color="#FFFFFF"
+                                      />
+                                    </View>
+                                    <View style={styles.timelineEventBody}>
+                                      <View style={styles.timelineEventTopRow}>
+                                        <Text
+                                          style={[
+                                            styles.timelineEventTitle,
+                                            event.completed &&
+                                              styles.completedText,
+                                          ]}
+                                          numberOfLines={1}
+                                        >
+                                          {event.title}
+                                        </Text>
+                                        <Text style={styles.timelineEventTime}>
+                                          {event.startTime}
+                                        </Text>
+                                      </View>
+                                      <Text
+                                        style={styles.timelineEventMeta}
+                                        numberOfLines={1}
+                                      >
+                                        {category.label}
+                                        {event.location
+                                          ? ` · ${event.location}`
+                                          : ""}
+                                      </Text>
+                                      <View style={styles.timelineEventBadges}>
+                                        <ReminderBadge
+                                          currentTime={currentTime}
+                                          event={event}
+                                          occurrenceDate={occurrenceDate}
+                                          variant="inline"
+                                        />
+                                        <EventTaskPill
+                                          color={event.color}
+                                          tasks={eventTasksForItem}
+                                          variant="inline"
+                                        />
+                                        {event.recurrence !== "none" ? (
+                                          <View
+                                            style={styles.timelineMiniBadge}
+                                          >
+                                            <Ionicons
+                                              name="repeat-outline"
+                                              size={12}
+                                              color={event.color}
+                                            />
+                                            <Text
+                                              style={[
+                                                styles.timelineMiniBadgeText,
+                                                { color: event.color },
+                                              ]}
+                                              numberOfLines={1}
+                                            >
+                                              {getRecurrenceSummaryLabel(event)}
+                                            </Text>
+                                          </View>
+                                        ) : null}
+                                      </View>
+                                    </View>
+                                  </Pressable>
+                                  <Pressable
+                                    accessibilityLabel="Duplicar evento"
+                                    style={styles.timelineDuplicateButton}
+                                    onPress={() => duplicateEvent(event)}
+                                  >
+                                    <Ionicons
+                                      name="copy-outline"
+                                      size={18}
+                                      color="#6B7280"
+                                    />
+                                  </Pressable>
+                                </View>
+                              </SwipeableEventRow>
+                            );
+                          })}
+                        </View>
                       </View>
-                    </Pressable>
-                    <Pressable
-                      accessibilityLabel="Duplicar evento"
-                      style={styles.eventDuplicateButton}
-                      onPress={() => duplicateEvent(event)}
-                    >
-                      <Ionicons name="copy-outline" size={20} color="#6B7280" />
-                    </Pressable>
+                    )}
                   </View>
-                  </View>
-                </SwipeableEventRow>
-              ))}
+                );
+              })}
             </View>
           )}
         </View>
 
-        <View style={styles.overview}>
-          <View style={styles.overviewHeader}>
-            <Text style={styles.sectionLabel}>Vista rápida</Text>
-            <Text style={styles.overviewMeta}>
-              {completedWeekEvents} de {weekSummaryEvents.length} completados
-            </Text>
+        <View style={styles.activityPanel}>
+          <View style={styles.activityHeader}>
+            <View style={styles.activityHeaderText}>
+              <Text style={styles.sectionLabel}>Resumen</Text>
+              <Text style={styles.activityTitle}>Ritmo de la semana</Text>
+              <Text style={styles.activitySubtitle} numberOfLines={1}>
+                {formatWeekRange(currentWeekStart)} · {allWeekOccurrences.length}{" "}
+                {allWeekOccurrences.length === 1 ? "plan" : "planes"}
+              </Text>
+            </View>
+            <View style={styles.activityMonthBadge}>
+              <Text style={styles.activityMonthValue}>
+                {activityWeekCompletionPercent}%
+              </Text>
+              <Text style={styles.activityMonthLabel}>Semana</Text>
+            </View>
           </View>
+
+          <View style={styles.activityBarsRow}>
+            {activityWeekBars.map((day) => {
+              const hasEvents = day.events.length > 0;
+
+              return (
+                <View
+                  key={`${day.label}-${toDateKey(day.date)}`}
+                  style={styles.activityBarItem}
+                >
+                  <View style={styles.activityBarTrack}>
+                    <View
+                      style={[
+                        styles.activityBarFill,
+                        {
+                          backgroundColor:
+                            day.events.length > 0 &&
+                            day.completedEvents === day.events.length
+                              ? "#3D8B7D"
+                              : hasEvents
+                                ? "#E05D5D"
+                                : "#D8CEC2",
+                          height: day.barHeight,
+                        },
+                      ]}
+                    />
+                  </View>
+                  <Text style={styles.activityBarLabel}>{day.label}</Text>
+                  <Text style={styles.activityBarCount}>
+                    {day.events.length}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+
+          <View style={styles.activityInsightBox}>
+            <Ionicons name="sparkles-outline" size={18} color="#D28A2E" />
+            <Text style={styles.activityInsightText}>{activityInsight}</Text>
+          </View>
+        </View>
+
+        <View style={styles.overview}>
+          <Pressable
+            accessibilityLabel={
+              isQuickMoveExpanded
+                ? "Ocultar herramienta para mover eventos"
+                : "Mostrar herramienta para mover eventos"
+            }
+            style={styles.quickMoveHeader}
+            onPress={() => setIsQuickMoveExpanded((expanded) => !expanded)}
+          >
+            <View style={styles.quickMoveHeaderTextBlock}>
+              <Text style={styles.sectionLabel}>Mover eventos</Text>
+              <Text style={styles.quickMoveTitle}>
+                Reorganizar la semana
+              </Text>
+              <Text style={styles.quickMoveSubtitle} numberOfLines={1}>
+                {completedWeekEvents} de {weekSummaryEvents.length} completados
+              </Text>
+            </View>
+            <View style={styles.quickMoveHeaderAction}>
+              <Ionicons
+                name={isQuickMoveExpanded ? "chevron-up" : "chevron-down"}
+                size={22}
+                color={primaryIconColor}
+              />
+            </View>
+          </Pressable>
+
           <View style={styles.progressTrack}>
             <View
               style={[
@@ -5568,102 +6359,131 @@ export default function HomeScreen() {
               ]}
             />
           </View>
-          <Text style={styles.quickDragHelpText}>
-            Toca para editar. Mantén pulsado solo si quieres moverlo de día.
-          </Text>
 
-          {weekDays.map((day, index) => {
-            const isDropTarget = quickDrag?.targetIndex === index;
-            const isCurrentDragDay = quickDragEvent?.dateKey === day.dateKey;
+          {isQuickMoveExpanded ? (
+            <>
+              <Text style={styles.quickDragHelpText}>
+                Toca para editar. Mantén pulsado solo si quieres moverlo de día.
+              </Text>
 
-            return (
-            <View
-              key={day.dateKey}
-              ref={(node) => {
-                quickDropTargetRefs.current[day.dateKey] = node;
-              }}
-              style={[
-                styles.dayRow,
-                isCurrentDragDay && styles.dayRowDragOrigin,
-                isDropTarget && styles.dayRowDropZoneTarget,
-              ]}
-            >
-              {isDropTarget ? (
-                <View pointerEvents="none" style={styles.dayRowDropTopLine} />
-              ) : null}
-              <View style={styles.dayRowDate}>
-                <Text style={styles.dayRowLabel}>{day.label}</Text>
-                <Text style={styles.dayRowNumber}>{day.date.getDate()}</Text>
+              {weekDays.map((day, index) => {
+                const isDropTarget = quickDrag?.targetIndex === index;
+                const isCurrentDragDay = quickDragEvent?.dateKey === day.dateKey;
+
+                return (
+                  <View
+                    key={day.dateKey}
+                    ref={(node) => {
+                      quickDropTargetRefs.current[day.dateKey] = node;
+                    }}
+                    style={[
+                      styles.dayRow,
+                      isCurrentDragDay && styles.dayRowDragOrigin,
+                      isDropTarget && styles.dayRowDropZoneTarget,
+                    ]}
+                  >
+                    {isDropTarget ? (
+                      <View
+                        pointerEvents="none"
+                        style={styles.dayRowDropTopLine}
+                      />
+                    ) : null}
+                    <View style={styles.dayRowDate}>
+                      <Text style={styles.dayRowLabel}>{day.label}</Text>
+                      <Text style={styles.dayRowNumber}>
+                        {day.date.getDate()}
+                      </Text>
+                    </View>
+
+                    <View style={styles.dayRowEvents}>
+                      {day.events.length === 0 ? (
+                        <Text style={styles.noEventsText}>Sin eventos</Text>
+                      ) : (
+                        day.events.map((event) => (
+                          <QuickDraggableEvent
+                            key={event.id}
+                            event={event}
+                            isDragging={quickDrag?.eventId === event.id}
+                            onDragCancel={cancelQuickDrag}
+                            onDragEnd={finishQuickDrag}
+                            onDragMove={updateQuickDrag}
+                            onDragStart={startQuickDrag}
+                            onOpen={() =>
+                              openEventDetail(
+                                event,
+                                getOccurrenceStartForDate(event, day.date),
+                              )
+                            }
+                          >
+                            <View style={styles.compactEventPressable}>
+                              <View
+                                style={[
+                                  styles.compactIconDot,
+                                  {
+                                    backgroundColor: event.completed
+                                      ? "#9CA3AF"
+                                      : event.color,
+                                  },
+                                ]}
+                              >
+                                <Ionicons
+                                  name={getCategoryForEvent(event).icon}
+                                  size={11}
+                                  color="#FFFFFF"
+                                />
+                              </View>
+                              <Text
+                                style={[
+                                  styles.compactEventText,
+                                  event.completed && styles.completedText,
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {event.startTime} {event.title}
+                              </Text>
+                              {event.recurrence !== "none" ? (
+                                <Ionicons
+                                  name="repeat-outline"
+                                  size={14}
+                                  color="#6B7280"
+                                />
+                              ) : null}
+                              {getTasksForEvent(event.id).length > 0 ? (
+                                <Ionicons
+                                  name="checkbox-outline"
+                                  size={14}
+                                  color="#6B7280"
+                                />
+                              ) : null}
+                            </View>
+                          </QuickDraggableEvent>
+                        ))
+                      )}
+                    </View>
+                  </View>
+                );
+              })}
+            </>
+          ) : (
+            <View style={styles.quickMoveCollapsedRow}>
+              <View style={styles.quickMoveMiniStat}>
+                <Text style={styles.quickMoveMiniValue}>{totalEvents}</Text>
+                <Text style={styles.quickMoveMiniLabel}>planes</Text>
               </View>
-
-              <View style={styles.dayRowEvents}>
-                {day.events.length === 0 ? (
-                  <Text style={styles.noEventsText}>Sin eventos</Text>
-                ) : (
-                  day.events.map((event) => (
-                    <QuickDraggableEvent
-                      key={event.id}
-                      event={event}
-                      isDragging={quickDrag?.eventId === event.id}
-                      onDragCancel={cancelQuickDrag}
-                      onDragEnd={finishQuickDrag}
-                      onDragMove={updateQuickDrag}
-                      onDragStart={startQuickDrag}
-                      onOpen={() =>
-                        openEventDetail(
-                          event,
-                          getOccurrenceStartForDate(event, day.date),
-                        )
-                      }
-                    >
-                      <View style={styles.compactEventPressable}>
-                        <View
-                          style={[
-                            styles.compactIconDot,
-                            {
-                              backgroundColor: event.completed
-                                ? "#9CA3AF"
-                                : event.color,
-                            },
-                          ]}
-                        >
-                          <Ionicons
-                            name={getCategoryForEvent(event).icon}
-                            size={11}
-                            color="#FFFFFF"
-                          />
-                        </View>
-                        <Text
-                          style={[
-                            styles.compactEventText,
-                            event.completed && styles.completedText,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {event.startTime} {event.title}
-                        </Text>
-                        {event.recurrence !== "none" ? (
-                          <Ionicons
-                            name="repeat-outline"
-                            size={14}
-                            color="#6B7280"
-                          />
-                        ) : null}
-                        {getTasksForEvent(event.id).length > 0 ? (
-                          <Ionicons
-                            name="checkbox-outline"
-                            size={14}
-                            color="#6B7280"
-                          />
-                        ) : null}
-                      </View>
-                    </QuickDraggableEvent>
-                  ))
-                )}
+              <View style={styles.quickMoveMiniStat}>
+                <Text style={styles.quickMoveMiniValue}>
+                  {pendingWeekEvents}
+                </Text>
+                <Text style={styles.quickMoveMiniLabel}>pendientes</Text>
+              </View>
+              <View style={styles.quickMoveMiniStat}>
+                <Text style={styles.quickMoveMiniValue}>
+                  {activityWeekCompletionPercent}%
+                </Text>
+                <Text style={styles.quickMoveMiniLabel}>semana</Text>
               </View>
             </View>
-            );
-          })}
+          )}
         </View>
       </ScrollView>
 
@@ -5715,6 +6535,70 @@ export default function HomeScreen() {
         </View>
       ) : null}
 
+      {appToast ? (() => {
+        const toastPalette = TOAST_PALETTE[appToast.variant];
+
+        return (
+          <Animated.View
+            accessibilityLiveRegion="polite"
+            accessibilityRole="alert"
+            style={[
+              styles.appToast,
+              {
+                backgroundColor: toastPalette.backgroundColor,
+                opacity: toastOpacity,
+                transform: [{ translateY: toastTranslateY }],
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.appToastIconWrap,
+                { backgroundColor: toastPalette.iconBackgroundColor },
+              ]}
+            >
+              <Ionicons
+                name={appToast.icon}
+                size={18}
+                color={toastPalette.iconColor}
+              />
+            </View>
+            <View style={styles.appToastTextBlock}>
+              <Text style={styles.appToastTitle} numberOfLines={1}>
+                {appToast.title}
+              </Text>
+              {appToast.message ? (
+                <Text style={styles.appToastText} numberOfLines={1}>
+                  {appToast.message}
+                </Text>
+              ) : null}
+            </View>
+            {appToast.action === "undo-delete" && lastDeletedEvent ? (
+              <Pressable
+                accessibilityLabel="Deshacer borrado del evento"
+                accessibilityRole="button"
+                style={styles.appToastActionButton}
+                onPress={() => {
+                  void undoDeleteEvent();
+                }}
+              >
+                <Text style={styles.appToastActionText}>Deshacer</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                accessibilityLabel="Cerrar aviso"
+                accessibilityRole="button"
+                hitSlop={8}
+                style={styles.appToastCloseButton}
+                onPress={hideAppToast}
+              >
+                <Ionicons name="close" size={17} color="#FFFFFF" />
+              </Pressable>
+            )}
+          </Animated.View>
+        );
+      })() : null}
+
 
       <Modal
         animationType="fade"
@@ -5742,18 +6626,24 @@ export default function HomeScreen() {
                 <Text style={styles.calendarMonthTitle}>
                   {MONTH_YEAR_FORMATTER.format(calendarMonthDate)}
                 </Text>
-                <Text style={styles.calendarPickerHint}>
-                  Selecciona un día y revisa sus planes antes de abrirlo
-                </Text>
               </View>
 
-              <Pressable
-                accessibilityLabel="Mes siguiente"
-                style={styles.calendarNavButton}
-                onPress={() => changeCalendarMonth(1)}
-              >
-                <Ionicons name="chevron-forward" size={21} color={primaryIconColor} />
-              </Pressable>
+              <View style={styles.calendarHeaderActions}>
+                <Pressable
+                  accessibilityLabel="Mes siguiente"
+                  style={styles.calendarNavButton}
+                  onPress={() => changeCalendarMonth(1)}
+                >
+                  <Ionicons name="chevron-forward" size={21} color={primaryIconColor} />
+                </Pressable>
+                <Pressable
+                  accessibilityLabel="Cerrar calendario"
+                  style={styles.calendarNavButton}
+                  onPress={() => setIsCalendarVisible(false)}
+                >
+                  <Ionicons name="close" size={21} color={primaryIconColor} />
+                </Pressable>
+              </View>
             </View>
 
             <View style={styles.calendarWeekRow}>
@@ -5768,16 +6658,30 @@ export default function HomeScreen() {
               {calendarDays.map((day) => {
                 const isSelected = day.dateKey === calendarPreviewDateKey;
                 const isToday = isSameDay(day.date, today);
+                const hasOverdueEvents = day.overdueCount > 0;
 
                 return (
                   <Pressable
+                    accessibilityHint="Mantén pulsado para crear un evento en este día"
+                    accessibilityLabel={`${day.date.getDate()}, ${
+                      day.eventCount === 1
+                        ? "1 evento"
+                        : `${day.eventCount} eventos`
+                    }${hasOverdueEvents ? `, ${day.overdueCount} atrasados` : ""}`}
+                    delayLongPress={320}
                     key={day.dateKey}
                     style={[
                       styles.calendarDayCell,
                       !day.isCurrentMonth && styles.calendarDayCellMuted,
                       isToday && styles.calendarDayCellToday,
+                      hasOverdueEvents && styles.calendarDayCellOverdue,
                       isSelected && styles.calendarDayCellSelected,
                     ]}
+                    onLongPress={() => {
+                      previewCalendarDate(day.date);
+                      setIsCalendarVisible(false);
+                      openNewEventModal(day.date);
+                    }}
                     onPress={() => previewCalendarDate(day.date)}
                   >
                     <Text
@@ -5831,7 +6735,6 @@ export default function HomeScreen() {
             <View style={styles.calendarPreviewPanel}>
               <View style={styles.calendarPreviewHeader}>
                 <View style={styles.calendarPreviewTitleBlock}>
-                  <Text style={styles.sectionLabel}>Vista del día</Text>
                   <Text style={styles.calendarPreviewTitle}>
                     {FULL_DATE_FORMATTER.format(calendarPreviewDate)}
                   </Text>
@@ -5843,83 +6746,46 @@ export default function HomeScreen() {
                 </View>
               </View>
 
-              {calendarPreviewEvents.length === 0 ? (
-                <AgendaEmptyState
-                  compact
-                  icon="calendar-clear-outline"
-                  text="Este día está despejado."
-                  title="Sin planes"
-                />
-              ) : (
-                <View style={styles.calendarPreviewList}>
-                  {calendarPreviewEvents.map((event) => (
-                    <Pressable
-                      key={`${event.id}-calendar-preview`}
-                      style={styles.calendarPreviewItem}
-                      onPress={() => {
-                        setIsCalendarVisible(false);
-                        openEventDetail(
-                          event,
-                          getOccurrenceStartForDate(event, calendarPreviewDate),
-                        );
-                      }}
-                    >
-                      <View
-                        style={[
-                          styles.compactIconDot,
-                          {
-                            backgroundColor: event.completed
-                              ? "#9CA3AF"
-                              : event.color,
-                          },
-                        ]}
-                      >
-                        <Ionicons
-                          name={getCategoryForEvent(event).icon}
-                          size={11}
-                          color="#FFFFFF"
-                        />
-                      </View>
-                      <View style={styles.calendarPreviewItemBody}>
-                        <Text
-                          style={[
-                            styles.calendarPreviewItemTitle,
-                            event.completed && styles.completedText,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {event.startTime} · {event.title}
-                        </Text>
-                        <Text
-                          style={styles.calendarPreviewItemMeta}
-                          numberOfLines={1}
-                        >
-                          {getCategoryForEvent(event).label}
-                          {event.location ? ` · ${event.location}` : ""}
-                          {getTasksForEvent(event.id).length > 0
-                            ? ` · ${getEventTaskStatsLabel(
-                                getTasksForEvent(event.id),
-                              )}`
-                            : ""}
-                        </Text>
-                      </View>
-                      <ReminderBadge
-                        currentTime={currentTime}
-                        event={event}
-                        occurrenceDate={getOccurrenceStartForDate(
-                          event,
-                          calendarPreviewDate,
-                        )}
-                      />
-                    </Pressable>
-                  ))}
-                  {calendarPreviewExtraCount > 0 ? (
-                    <Text style={styles.calendarPreviewMoreText}>
-                      +{calendarPreviewExtraCount} planes más
-                    </Text>
-                  ) : null}
+              <View style={styles.calendarPreviewStatsRow}>
+                <View style={styles.calendarPreviewStatPill}>
+                  <Ionicons name="time-outline" size={13} color="#4D74B8" />
+                  <Text style={styles.calendarPreviewStatText}>
+                    {calendarPreviewPendingCount} pendientes
+                  </Text>
                 </View>
-              )}
+                <View style={styles.calendarPreviewStatPill}>
+                  <Ionicons
+                    name="checkmark-circle-outline"
+                    size={13}
+                    color="#3D8B7D"
+                  />
+                  <Text style={styles.calendarPreviewStatText}>
+                    {calendarPreviewCompletedCount} hechos
+                  </Text>
+                </View>
+                {calendarPreviewOverdueCount > 0 ? (
+                  <View
+                    style={[
+                      styles.calendarPreviewStatPill,
+                      styles.calendarPreviewStatPillOverdue,
+                    ]}
+                  >
+                    <Ionicons
+                      name="alert-circle-outline"
+                      size={13}
+                      color="#B42318"
+                    />
+                    <Text
+                      style={[
+                        styles.calendarPreviewStatText,
+                        styles.calendarPreviewStatTextOverdue,
+                      ]}
+                    >
+                      {calendarPreviewOverdueCount} atrasados
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
             </View>
 
             <View style={styles.calendarActionsRow}>
@@ -5967,6 +6833,7 @@ export default function HomeScreen() {
             onPress={() => setIsFiltersExpanded(false)}
           />
           <DraggableBottomSheet
+            animationKey={isFiltersExpanded}
             onClose={() => setIsFiltersExpanded(false)}
             style={styles.filtersBottomSheet}
           >
@@ -6227,6 +7094,7 @@ export default function HomeScreen() {
             onPress={closeCategoryManager}
           />
           <DraggableBottomSheet
+            animationKey={isCategoryManagerVisible}
             onClose={closeCategoryManager}
             style={styles.categoryManagerSheet}
           >
@@ -6249,7 +7117,7 @@ export default function HomeScreen() {
               <View style={styles.categoryManagerList}>
                 {categories.map((category) => {
                   const isEditing = editingCategoryId === category.id;
-                  const eventCount = events.filter(
+                  const eventCount = visibleEvents.filter(
                     (event) => event.category === category.id,
                   ).length;
 
@@ -6432,6 +7300,7 @@ export default function HomeScreen() {
         <View style={styles.dayDetailOverlay}>
           <Pressable style={styles.modalBackdrop} onPress={closeDayDetail} />
           <DraggableBottomSheet
+            animationKey={isDayDetailVisible}
             onClose={closeDayDetail}
             style={styles.dayDetailCard}
           >
@@ -6644,6 +7513,7 @@ export default function HomeScreen() {
         >
           <Pressable style={styles.modalBackdrop} onPress={closeEventDetail} />
           <DraggableBottomSheet
+            animationKey={`${selectedEventId ?? "none"}-${isEventDetailVisible}`}
             onClose={closeEventDetail}
             style={[styles.modalCard, styles.eventDetailCard]}
           >
@@ -6657,7 +7527,7 @@ export default function HomeScreen() {
                     ]}
                   >
                     <Ionicons
-                      name={getCategoryForEvent(selectedDetailEvent).icon}
+                      name={selectedDetailCategory.icon}
                       size={28}
                       color="#FFFFFF"
                     />
@@ -6736,10 +7606,17 @@ export default function HomeScreen() {
 
                   <View style={styles.eventDetailInfoGrid}>
                     <View style={styles.eventDetailInfoCard}>
-                      <Ionicons name="calendar-outline" size={18} color={selectedDetailEvent.color} />
+                      <Ionicons name="pricetag-outline" size={18} color={selectedDetailEvent.color} />
                       <Text style={styles.eventDetailInfoLabel}>Categoría</Text>
                       <Text style={styles.eventDetailInfoValue}>
-                        {getCategoryForEvent(selectedDetailEvent).label}
+                        {selectedDetailCategory.label}
+                      </Text>
+                    </View>
+                    <View style={styles.eventDetailInfoCard}>
+                      <Ionicons name="time-outline" size={18} color={selectedDetailEvent.color} />
+                      <Text style={styles.eventDetailInfoLabel}>Hora</Text>
+                      <Text style={styles.eventDetailInfoValue}>
+                        {selectedDetailEvent.startTime}
                       </Text>
                     </View>
                     <View style={styles.eventDetailInfoCard}>
@@ -6747,6 +7624,15 @@ export default function HomeScreen() {
                       <Text style={styles.eventDetailInfoLabel}>Recordatorio</Text>
                       <Text style={styles.eventDetailInfoValue}>
                         {selectedDetailEvent.reminder}
+                      </Text>
+                    </View>
+                    <View style={styles.eventDetailInfoCard}>
+                      <Ionicons name="repeat-outline" size={18} color={selectedDetailEvent.color} />
+                      <Text style={styles.eventDetailInfoLabel}>Repetición</Text>
+                      <Text style={styles.eventDetailInfoValue} numberOfLines={2}>
+                        {selectedDetailEvent.recurrence === "none"
+                          ? "No se repite"
+                          : getRecurrenceSummaryLabel(selectedDetailEvent)}
                       </Text>
                     </View>
                   </View>
@@ -6768,6 +7654,39 @@ export default function HomeScreen() {
                         tasks={selectedDetailTasks}
                         variant="detail"
                       />
+                      <View style={styles.eventDetailProgressCard}>
+                        <View style={styles.eventDetailProgressHeader}>
+                          <Text style={styles.eventDetailProgressTitle}>
+                            Progreso
+                          </Text>
+                          <Text style={styles.eventDetailProgressValue}>
+                            {selectedDetailTaskStats.completed}/
+                            {selectedDetailTaskStats.total}
+                          </Text>
+                        </View>
+                        <View style={styles.eventDetailProgressTrack}>
+                          <View
+                            style={[
+                              styles.eventDetailProgressFill,
+                              {
+                                backgroundColor: selectedDetailEvent.color,
+                                width: `${Math.round(
+                                  selectedDetailTaskProgress * 100,
+                                )}%`,
+                              },
+                            ]}
+                          />
+                        </View>
+                        <Text style={styles.eventDetailProgressText}>
+                          {selectedDetailTaskStats.pending === 0
+                            ? "Checklist completada."
+                            : `${selectedDetailTaskStats.pending} ${
+                                selectedDetailTaskStats.pending === 1
+                                  ? "tarea pendiente"
+                                  : "tareas pendientes"
+                              } antes de completar este plan.`}
+                        </Text>
+                      </View>
                       <View style={styles.detailTaskList}>
                         {selectedDetailTasks.map((task) => (
                           <Pressable
@@ -6831,17 +7750,6 @@ export default function HomeScreen() {
                     </Text>
                   </View>
 
-                  {selectedDetailEvent.recurrence !== "none" ? (
-                    <View style={styles.eventDetailSection}>
-                      <View style={styles.eventDetailSectionHeader}>
-                        <Ionicons name="repeat-outline" size={18} color={selectedDetailEvent.color} />
-                        <Text style={styles.eventDetailSectionTitle}>Repetición</Text>
-                      </View>
-                      <Text style={styles.eventDetailSectionText}>
-                        {getRecurrenceSummaryLabel(selectedDetailEvent)}
-                      </Text>
-                    </View>
-                  ) : null}
                 </ScrollView>
 
                 <View style={styles.eventDetailActions}>
@@ -6951,6 +7859,7 @@ export default function HomeScreen() {
         >
           <Pressable style={styles.modalBackdrop} onPress={closeEventModal} />
           <DraggableBottomSheet
+            animationKey={`${editingEventId ?? "new"}-${isEventModalVisible}`}
             onClose={finishCloseEventModal}
             style={styles.modalCard}
           >
@@ -7024,7 +7933,7 @@ export default function HomeScreen() {
                     showsHorizontalScrollIndicator={false}
                     style={styles.templateStrip}
                   >
-                    {EVENT_TEMPLATES.map((template) => {
+                    {eventTemplates.map((template) => {
                       const templateCategory = getCategory(template.categoryId);
                       const isSelected = isEventTemplateSelected(template);
 
@@ -7922,6 +8831,7 @@ const styles = StyleSheet.create({
   },
   eventDetailInfoGrid: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 12,
   },
   eventDetailInfoCard: {
@@ -7929,8 +8839,10 @@ const styles = StyleSheet.create({
     borderColor: "#EFE4D8",
     borderRadius: 18,
     borderWidth: 1,
-    flex: 1,
+    flexBasis: "47%",
+    flexGrow: 1,
     gap: 5,
+    minHeight: 96,
     padding: 14,
   },
   eventDetailInfoLabel: {
@@ -7972,6 +8884,48 @@ const styles = StyleSheet.create({
   detailTaskList: {
     gap: 8,
     marginTop: 12,
+  },
+  eventDetailProgressCard: {
+    backgroundColor: "#F9FAFB",
+    borderColor: "#E5E7EB",
+    borderRadius: 16,
+    borderWidth: 1,
+    marginTop: 12,
+    padding: 12,
+  },
+  eventDetailProgressHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  eventDetailProgressTitle: {
+    color: "#172033",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  eventDetailProgressValue: {
+    color: "#4B5563",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  eventDetailProgressTrack: {
+    backgroundColor: "#E5E7EB",
+    borderRadius: 999,
+    height: 8,
+    marginTop: 9,
+    overflow: "hidden",
+  },
+  eventDetailProgressFill: {
+    borderRadius: 999,
+    height: "100%",
+  },
+  eventDetailProgressText: {
+    color: "#6B7280",
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 17,
+    marginTop: 8,
   },
   detailTaskRow: {
     alignItems: "center",
@@ -8228,7 +9182,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
     gap: 12,
-    marginTop: 22,
+    marginTop: 12,
   },
   arrowButton: {
     alignItems: "center",
@@ -8257,9 +9211,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#172033",
     borderRadius: 18,
     flex: 1,
-    minHeight: 68,
+    minHeight: 62,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 10,
     shadowColor: "#111827",
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.13,
@@ -8515,13 +9469,68 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     height: "100%",
   },
+  homeActionRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+  },
+  homeActionButton: {
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderColor: "#ECE3D8",
+    borderRadius: 18,
+    borderWidth: 1,
+    flex: 1,
+    flexDirection: "row",
+    gap: 8,
+    minHeight: 58,
+    paddingHorizontal: 10,
+    shadowColor: "#111827",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.04,
+    shadowRadius: 14,
+    elevation: 1,
+  },
+  homeActionButtonPrimary: {
+    backgroundColor: "#172033",
+    borderColor: "#172033",
+  },
+  homeActionIcon: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderRadius: 13,
+    height: 34,
+    justifyContent: "center",
+    width: 34,
+  },
+  homeActionTextBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  homeActionButtonText: {
+    color: "#172033",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  homeActionButtonTextPrimary: {
+    color: "#FFFFFF",
+  },
+  homeActionButtonMeta: {
+    color: "#6B7280",
+    fontSize: 11,
+    fontWeight: "800",
+    marginTop: 2,
+  },
+  homeActionButtonMetaPrimary: {
+    color: "#D7E3E4",
+  },
   activityPanel: {
     backgroundColor: "#FFFFFF",
     borderColor: "#E5E7EB",
-    borderRadius: 24,
+    borderRadius: 22,
     borderWidth: 1,
     marginTop: 14,
-    padding: 16,
+    padding: 14,
     shadowColor: "#111827",
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.06,
@@ -9502,6 +10511,194 @@ const styles = StyleSheet.create({
     elevation: 4,
     width: 44,
   },
+  timeline: {
+    gap: 0,
+    marginTop: 16,
+  },
+  timelineHourRow: {
+    flexDirection: "row",
+    gap: 10,
+    minHeight: 86,
+  },
+  timelineHourLabelBlock: {
+    alignItems: "flex-end",
+    paddingTop: 12,
+    width: 48,
+  },
+  timelineHourLabel: {
+    color: "#8A7565",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  timelineHourLabelNow: {
+    color: "#E05D5D",
+  },
+  timelineRail: {
+    alignItems: "center",
+    paddingTop: 15,
+    width: 16,
+  },
+  timelineDot: {
+    backgroundColor: "#D8CEC2",
+    borderColor: "#FFFFFF",
+    borderRadius: 7,
+    borderWidth: 2,
+    height: 13,
+    width: 13,
+    zIndex: 2,
+  },
+  timelineDotActive: {
+    backgroundColor: "#172033",
+  },
+  timelineDotNow: {
+    backgroundColor: "#E05D5D",
+  },
+  timelineHourSlot: {
+    borderLeftColor: "#ECE3D8",
+    borderLeftWidth: 1,
+    flex: 1,
+    minHeight: TIMELINE_HOUR_SLOT_HEIGHT,
+    paddingBottom: 12,
+    paddingLeft: 12,
+    position: "relative",
+  },
+  timelineEmptySlot: {
+    alignItems: "center",
+    backgroundColor: "#FAF8F4",
+    borderColor: "#EFE7DC",
+    borderRadius: 16,
+    borderStyle: "dashed",
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 7,
+    minHeight: 48,
+    paddingHorizontal: 12,
+  },
+  timelineEmptyText: {
+    color: "#9CA3AF",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  timelineNowLine: {
+    alignItems: "center",
+    flexDirection: "row",
+    left: -18,
+    position: "absolute",
+    right: 0,
+    zIndex: 4,
+  },
+  timelineNowDot: {
+    backgroundColor: "#E05D5D",
+    borderColor: "#FFFFFF",
+    borderRadius: 6,
+    borderWidth: 2,
+    height: 12,
+    width: 12,
+  },
+  timelineNowRule: {
+    backgroundColor: "#E05D5D",
+    flex: 1,
+    height: 2,
+    opacity: 0.7,
+  },
+  timelineNowText: {
+    color: "#E05D5D",
+    fontSize: 10,
+    fontWeight: "900",
+    marginLeft: 6,
+    textTransform: "uppercase",
+  },
+  timelineEventStack: {
+    gap: 8,
+  },
+  timelineEventCard: {
+    alignItems: "stretch",
+    backgroundColor: "#FAF8F4",
+    borderColor: "#EFE7DC",
+    borderLeftWidth: 4,
+    borderRadius: 18,
+    borderWidth: 1,
+    flexDirection: "row",
+    minHeight: 74,
+    overflow: "hidden",
+  },
+  timelineEventCardCompleted: {
+    opacity: 0.68,
+  },
+  timelineEventPressable: {
+    alignItems: "center",
+    flex: 1,
+    flexDirection: "row",
+    gap: 10,
+    minWidth: 0,
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+  },
+  timelineEventIcon: {
+    alignItems: "center",
+    borderRadius: 13,
+    flexShrink: 0,
+    height: 34,
+    justifyContent: "center",
+    width: 34,
+  },
+  timelineEventBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  timelineEventTopRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  timelineEventTitle: {
+    color: "#111827",
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  timelineEventTime: {
+    color: "#4B5563",
+    flexShrink: 0,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  timelineEventMeta: {
+    color: "#6B7280",
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 3,
+  },
+  timelineEventBadges: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 8,
+  },
+  timelineMiniBadge: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.68)",
+    borderRadius: 999,
+    flexDirection: "row",
+    gap: 4,
+    maxWidth: 150,
+    minHeight: 27,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  timelineMiniBadgeText: {
+    flexShrink: 1,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  timelineDuplicateButton: {
+    alignItems: "center",
+    borderLeftColor: "rgba(31, 42, 55, 0.08)",
+    borderLeftWidth: 1,
+    justifyContent: "center",
+    width: 42,
+  },
   eventList: {
     gap: 12,
     marginTop: 16,
@@ -9660,6 +10857,65 @@ const styles = StyleSheet.create({
     color: "#4B5563",
     fontSize: 13,
     fontWeight: "700",
+  },
+  quickMoveHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
+  },
+  quickMoveHeaderTextBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  quickMoveTitle: {
+    color: "#172033",
+    fontSize: 18,
+    fontWeight: "900",
+    marginTop: 3,
+  },
+  quickMoveSubtitle: {
+    color: "#6B7280",
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 3,
+  },
+  quickMoveHeaderAction: {
+    alignItems: "center",
+    backgroundColor: "#F7F5F0",
+    borderColor: "#E8DFD3",
+    borderRadius: 14,
+    borderWidth: 1,
+    height: 40,
+    justifyContent: "center",
+    width: 40,
+  },
+  quickMoveCollapsedRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+  },
+  quickMoveMiniStat: {
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderColor: "#E5E7EB",
+    borderRadius: 16,
+    borderWidth: 1,
+    flex: 1,
+    minHeight: 58,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  quickMoveMiniValue: {
+    color: "#172033",
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  quickMoveMiniLabel: {
+    color: "#6B7280",
+    fontSize: 11,
+    fontWeight: "800",
+    marginTop: 2,
+    textTransform: "uppercase",
   },
   progressTrack: {
     backgroundColor: "#EEE8DF",
@@ -9847,6 +11103,69 @@ const styles = StyleSheet.create({
     shadowRadius: 14,
     width: 58,
   },
+  appToast: {
+    alignItems: "center",
+    backgroundColor: "#111827",
+    borderColor: "rgba(255,255,255,0.16)",
+    borderRadius: 18,
+    borderWidth: 1,
+    bottom: 18,
+    flexDirection: "row",
+    gap: 12,
+    left: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    position: "absolute",
+    right: 16,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.24,
+    shadowRadius: 24,
+    elevation: 12,
+    zIndex: 40,
+  },
+  appToastIconWrap: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderRadius: 999,
+    height: 36,
+    justifyContent: "center",
+    width: 36,
+  },
+  appToastTextBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  appToastTitle: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  appToastText: {
+    color: "#D8DEE9",
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 2,
+  },
+  appToastActionButton: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  appToastActionText: {
+    color: "#1F2A37",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  appToastCloseButton: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderRadius: 999,
+    height: 32,
+    justifyContent: "center",
+    width: 32,
+  },
   modalOverlay: {
     flex: 1,
     justifyContent: "flex-end",
@@ -9876,7 +11195,7 @@ const styles = StyleSheet.create({
     elevation: 12,
     maxHeight: "94%",
     maxWidth: 430,
-    padding: 16,
+    padding: 14,
     shadowColor: "#000000",
     shadowOffset: { width: 0, height: 12 },
     shadowOpacity: 0.2,
@@ -9888,6 +11207,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 12,
     justifyContent: "space-between",
+  },
+  calendarHeaderActions: {
+    flexDirection: "row",
+    gap: 8,
   },
   calendarTitleBlock: {
     alignItems: "center",
@@ -9921,7 +11244,7 @@ const styles = StyleSheet.create({
   },
   calendarWeekRow: {
     flexDirection: "row",
-    marginTop: 16,
+    marginTop: 12,
   },
   calendarWeekday: {
     color: "#8A6F5A",
@@ -9940,9 +11263,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "#F9F7F3",
     borderColor: "#EFE7DC",
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
-    height: 52,
+    height: 48,
     justifyContent: "center",
     width: "14.285%",
   },
@@ -9953,6 +11276,10 @@ const styles = StyleSheet.create({
   calendarDayCellToday: {
     borderColor: "#3D8B7D",
     borderWidth: 2,
+  },
+  calendarDayCellOverdue: {
+    backgroundColor: "#FEF3F2",
+    borderColor: "#FECACA",
   },
   calendarDayCellSelected: {
     backgroundColor: "#1F2A37",
@@ -9999,10 +11326,10 @@ const styles = StyleSheet.create({
   calendarPreviewPanel: {
     backgroundColor: "#F9F7F3",
     borderColor: "#EFE7DC",
-    borderRadius: 18,
+    borderRadius: 14,
     borderWidth: 1,
-    marginTop: 14,
-    padding: 12,
+    marginTop: 10,
+    padding: 10,
   },
   calendarPreviewHeader: {
     alignItems: "flex-start",
@@ -10016,24 +11343,52 @@ const styles = StyleSheet.create({
   },
   calendarPreviewTitle: {
     color: "#1F2A37",
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "800",
-    lineHeight: 23,
-    marginTop: 3,
+    lineHeight: 20,
     textTransform: "capitalize",
   },
   calendarPreviewCountBadge: {
     alignItems: "center",
     backgroundColor: "#1F2A37",
-    borderRadius: 12,
-    height: 34,
+    borderRadius: 10,
+    height: 30,
     justifyContent: "center",
-    width: 34,
+    width: 30,
   },
   calendarPreviewCountText: {
     color: "#FFFFFF",
     fontSize: 15,
     fontWeight: "900",
+  },
+  calendarPreviewStatsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 8,
+  },
+  calendarPreviewStatPill: {
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderColor: "#EFE7DC",
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 5,
+    minHeight: 28,
+    paddingHorizontal: 8,
+  },
+  calendarPreviewStatPillOverdue: {
+    backgroundColor: "#FEF3F2",
+    borderColor: "#FECACA",
+  },
+  calendarPreviewStatText: {
+    color: "#4B5563",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  calendarPreviewStatTextOverdue: {
+    color: "#B42318",
   },
   calendarPreviewList: {
     gap: 8,
@@ -10074,7 +11429,7 @@ const styles = StyleSheet.create({
   calendarActionsRow: {
     flexDirection: "row",
     gap: 8,
-    marginTop: 12,
+    marginTop: 10,
   },
   calendarSecondaryButton: {
     borderColor: "#E8DFD3",
@@ -10085,7 +11440,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 7,
     justifyContent: "center",
-    minHeight: 44,
+    minHeight: 40,
     paddingHorizontal: 12,
   },
   calendarPrimaryButton: {
@@ -10096,7 +11451,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 7,
     justifyContent: "center",
-    minHeight: 44,
+    minHeight: 40,
   },
   calendarPrimaryButtonText: {
     color: "#FFFFFF",

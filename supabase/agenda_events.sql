@@ -16,6 +16,7 @@ create table if not exists public.agenda_events (
   recurrence_end_date date,
   category text not null default 'personal',
   notification_id text,
+  deleted_at timestamptz,
   updated_at timestamptz not null default now()
 );
 
@@ -36,6 +37,9 @@ add column if not exists recurrence_weekdays integer[] not null default '{}'::in
 
 alter table public.agenda_events
 add column if not exists recurrence_end_date date;
+
+alter table public.agenda_events
+add column if not exists deleted_at timestamptz;
 
 update public.agenda_events
 set recurrence_interval = 1
@@ -147,6 +151,9 @@ on public.agenda_events (user_id, completed);
 
 create index if not exists agenda_events_user_category_idx
 on public.agenda_events (user_id, category);
+
+create index if not exists agenda_events_user_deleted_idx
+on public.agenda_events (user_id, deleted_at);
 
 create table if not exists public.agenda_categories (
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -298,3 +305,82 @@ alter table public.agenda_event_tasks
 
 create index if not exists agenda_event_tasks_user_event_idx
 on public.agenda_event_tasks (user_id, event_id, sort_order);
+
+create table if not exists public.agenda_event_templates (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  label text not null,
+  title text not null,
+  description text not null default '',
+  location text not null default '',
+  reminder text not null default '15 min antes',
+  start_time text,
+  category_id text not null default 'personal',
+  icon text not null default 'albums-outline',
+  tasks text[] not null default '{}'::text[],
+  sort_order integer not null default 999,
+  is_default boolean not null default false,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+alter table public.agenda_event_templates enable row level security;
+
+drop policy if exists "Users can read own agenda event templates" on public.agenda_event_templates;
+drop policy if exists "Users can insert own agenda event templates" on public.agenda_event_templates;
+drop policy if exists "Users can update own agenda event templates" on public.agenda_event_templates;
+drop policy if exists "Users can delete own agenda event templates" on public.agenda_event_templates;
+
+create policy "Users can read own agenda event templates"
+on public.agenda_event_templates for select
+to authenticated
+using (auth.uid() = user_id);
+
+create policy "Users can insert own agenda event templates"
+on public.agenda_event_templates for insert
+to authenticated
+with check (auth.uid() = user_id);
+
+create policy "Users can update own agenda event templates"
+on public.agenda_event_templates for update
+to authenticated
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+create policy "Users can delete own agenda event templates"
+on public.agenda_event_templates for delete
+to authenticated
+using (auth.uid() = user_id);
+
+create or replace function public.set_agenda_event_templates_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists set_agenda_event_templates_updated_at on public.agenda_event_templates;
+
+create trigger set_agenda_event_templates_updated_at
+before update on public.agenda_event_templates
+for each row
+execute function public.set_agenda_event_templates_updated_at();
+
+alter table public.agenda_event_templates
+  alter column description set default '',
+  alter column location set default '',
+  alter column reminder set default '15 min antes',
+  alter column category_id set default 'personal',
+  alter column icon set default 'albums-outline',
+  alter column tasks set default '{}'::text[],
+  alter column tasks set not null,
+  alter column sort_order set default 999,
+  alter column sort_order set not null,
+  alter column is_default set default false,
+  alter column is_default set not null;
+
+create index if not exists agenda_event_templates_user_sort_idx
+on public.agenda_event_templates (user_id, sort_order);

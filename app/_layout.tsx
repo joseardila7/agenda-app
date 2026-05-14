@@ -27,6 +27,9 @@ function RootLayoutContent() {
     <ThemeProvider value={resolvedTheme === 'dark' ? DarkTheme : DefaultTheme}>
       <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="settings/trash" options={{ headerShown: false }} />
+        <Stack.Screen name="settings/categories" options={{ headerShown: false }} />
+        <Stack.Screen name="settings/templates" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
       </Stack>
       <StatusBar style={resolvedTheme === 'dark' ? 'light' : 'dark'} />
