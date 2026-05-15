@@ -2176,47 +2176,9 @@ function getNotificationDate(event: AgendaEvent) {
   return notificationDate > new Date() ? notificationDate : null;
 }
 
-const WEB_NOTIFICATION_TIMEOUTS = new Map<string, ReturnType<typeof setTimeout>>();
-const MAX_WEB_NOTIFICATION_DELAY = 2_147_000_000;
-
-type WebNotificationPermission = "default" | "denied" | "granted";
-type WebNotificationConstructor = {
-  new (title: string, options?: { body?: string; tag?: string; requireInteraction?: boolean }): unknown;
-  permission: WebNotificationPermission;
-  requestPermission: () => Promise<WebNotificationPermission>;
-};
-
-function getWebNotificationApi() {
-  return (globalThis as { Notification?: WebNotificationConstructor }).Notification;
-}
-
-function getWebNotificationId(eventId: string) {
-  return `web-event-${eventId}`;
-}
-
 async function ensureNotificationPermissions() {
   if (Platform.OS === "web") {
-    const webNotification = getWebNotificationApi();
-
-    if (!webNotification) {
-      return false;
-    }
-
-    if (webNotification.permission === "granted") {
-      return true;
-    }
-
-    if (webNotification.permission === "denied") {
-      return false;
-    }
-
-    try {
-      const permission = await webNotification.requestPermission();
-      return permission === "granted";
-    } catch (error) {
-      console.warn("No se pudieron pedir permisos de notificación web", error);
-      return false;
-    }
+    return false;
   }
 
   const currentPermissions = await Notifications.getPermissionsAsync();
@@ -2230,18 +2192,7 @@ async function ensureNotificationPermissions() {
 }
 
 async function cancelEventNotification(notificationId?: string) {
-  if (!notificationId) {
-    return;
-  }
-
-  if (Platform.OS === "web") {
-    const timeout = WEB_NOTIFICATION_TIMEOUTS.get(notificationId);
-
-    if (timeout) {
-      clearTimeout(timeout);
-      WEB_NOTIFICATION_TIMEOUTS.delete(notificationId);
-    }
-
+  if (!notificationId || Platform.OS === "web") {
     return;
   }
 
@@ -2252,72 +2203,12 @@ async function cancelEventNotification(notificationId?: string) {
   }
 }
 
-function cancelAllWebEventNotifications() {
-  WEB_NOTIFICATION_TIMEOUTS.forEach((timeout) => clearTimeout(timeout));
-  WEB_NOTIFICATION_TIMEOUTS.clear();
-}
-
-async function showWebEventNotification(
-  event: AgendaEvent,
-  category = getEventCategory(event, DEFAULT_CATEGORY_BY_ID),
-) {
-  const webNotification = getWebNotificationApi();
-
-  if (!webNotification || webNotification.permission !== "granted") {
-    return;
-  }
-
-  try {
-    new webNotification(event.title || "Recordatorio de evento", {
-      body: `${event.startTime} · ${category.label}`,
-      requireInteraction: true,
-      tag: getWebNotificationId(event.id),
-    });
-  } catch (error) {
-    console.warn("No se pudo mostrar la notificación web", error);
-  }
-}
-
-async function scheduleWebEventNotification(
-  event: AgendaEvent,
-  category = getEventCategory(event, DEFAULT_CATEGORY_BY_ID),
-) {
-  const notificationDate = getNotificationDate(event);
-
-  if (!notificationDate) {
-    return undefined;
-  }
-
-  const hasPermissions = await ensureNotificationPermissions();
-
-  if (!hasPermissions) {
-    return undefined;
-  }
-
-  const notificationId = getWebNotificationId(event.id);
-  await cancelEventNotification(notificationId);
-
-  const delay = notificationDate.getTime() - Date.now();
-
-  if (delay <= 0 || delay > MAX_WEB_NOTIFICATION_DELAY) {
-    return notificationId;
-  }
-
-  const timeout = setTimeout(() => {
-    WEB_NOTIFICATION_TIMEOUTS.delete(notificationId);
-    showWebEventNotification(event, category);
-  }, delay);
-
-  WEB_NOTIFICATION_TIMEOUTS.set(notificationId, timeout);
-  return notificationId;
-}
-
 async function scheduleEventNotification(
   event: AgendaEvent,
   category = getEventCategory(event, DEFAULT_CATEGORY_BY_ID),
 ) {
   if (Platform.OS === "web") {
-    return scheduleWebEventNotification(event, category);
+    return undefined;
   }
 
   const notificationDate = getNotificationDate(event);
@@ -3661,24 +3552,6 @@ export default function HomeScreen() {
       importance: Notifications.AndroidImportance.HIGH,
     });
   }, []);
-
-  useEffect(() => {
-    if (Platform.OS !== "web" || !hasLoadedStoredEvents) {
-      return;
-    }
-
-    cancelAllWebEventNotifications();
-
-    events
-      .filter((event) => !event.completed && !event.deletedAt)
-      .forEach((event) => {
-        scheduleWebEventNotification(event, getCategoryForEvent(event));
-      });
-
-    return () => {
-      cancelAllWebEventNotifications();
-    };
-  }, [events, categories, hasLoadedStoredEvents]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -11933,12 +11806,10 @@ const styles = StyleSheet.create({
     width: 32,
   },
   modalOverlay: {
-    alignItems: "center",
     flex: 1,
     justifyContent: "flex-end",
   },
   dayDetailOverlay: {
-    alignItems: "center",
     flex: 1,
     justifyContent: "flex-end",
   },
@@ -12245,12 +12116,10 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     borderWidth: 1,
     maxHeight: "91%",
-    maxWidth: Platform.OS === "web" ? 430 : undefined,
     overflow: "hidden",
     paddingBottom: Platform.OS === "ios" ? 34 : 16,
     paddingHorizontal: 22,
     paddingTop: 4,
-    width: "100%",
   },
   dayDetailCard: {
     backgroundColor: "#FFFFFF",
@@ -13720,40 +13589,32 @@ const webStyleOverrides = StyleSheet.create({
     bottom: 94,
   },
   appToast: {
-    alignSelf: "center",
     bottom: 86,
-    left: "auto",
-    maxWidth: 420,
-    right: "auto",
-    width: "94%",
+    left: 14,
+    right: 14,
   },
   modalOverlay: {
     alignItems: "center",
-    paddingHorizontal: 12,
   },
   dayDetailOverlay: {
     alignItems: "center",
-    paddingHorizontal: 12,
   },
   modalCard: {
-    alignSelf: "center",
-    maxWidth: 440,
+    maxWidth: 540,
     paddingBottom: 24,
-    width: "94%",
+    width: "100%",
   },
   dayDetailCard: {
-    alignSelf: "center",
-    maxWidth: 440,
+    maxWidth: 540,
     paddingBottom: 24,
-    width: "94%",
+    width: "100%",
   },
   eventDetailCard: {
-    alignSelf: "center",
-    maxWidth: 440,
-    width: "94%",
+    maxWidth: 540,
+    width: "100%",
   },
   filtersBottomSheet: {
-    maxWidth: 560,
+    maxWidth: 540,
     paddingBottom: 24,
     width: "100%",
   },
