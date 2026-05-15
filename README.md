@@ -60,6 +60,28 @@ Build de produccion:
 npx eas build --profile production --platform all
 ```
 
+## Uso privado sin tienda
+
+Para usar la app sin App Store ni Google Play, se puede publicar como web/PWA:
+
+```bash
+npm run build:web
+```
+
+El resultado sale en `dist`.
+
+Guia interna:
+
+```bash
+docs/free-private-deployment.md
+```
+
+Guia de Vercel:
+
+```bash
+docs/vercel-deployment.md
+```
+
 ## Base de datos
 
 El esquema principal de Supabase esta en:

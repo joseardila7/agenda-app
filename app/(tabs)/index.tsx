@@ -5200,7 +5200,7 @@ export default function HomeScreen() {
     showAppToast({
       icon: existingCategory ? "pricetag-outline" : "add-circle-outline",
       message: nextCategory.label,
-      title: existingCategory ? "CategorÃ­a actualizada" : "CategorÃ­a creada",
+      title: existingCategory ? "Categoría actualizada" : "Categoría creada",
       variant: "success",
     });
     setSyncStatus("Sincronizando...");
@@ -5389,7 +5389,7 @@ export default function HomeScreen() {
       setFormErrors(nextErrors);
       showAppToast({
         icon: "alert-circle-outline",
-        message: "AÃ±ade un tÃ­tulo antes de guardar.",
+        message: "Añade un título antes de guardar.",
         title: "Falta completar el evento",
         variant: "danger",
       });
@@ -5478,7 +5478,7 @@ export default function HomeScreen() {
       showAppToast({
         icon: "cloud-offline-outline",
         message: "El evento se ha guardado en este dispositivo.",
-        title: "Sin conexiÃ³n con la nube",
+        title: "Sin conexión con la nube",
         variant: "warning",
       });
       setSyncStatus("Modo local");
