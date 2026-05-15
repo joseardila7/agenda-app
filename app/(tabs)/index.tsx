@@ -13600,21 +13600,21 @@ const webStyleOverrides = StyleSheet.create({
     alignItems: "center",
   },
   modalCard: {
-    maxWidth: 420,
+    maxWidth: 400,
     paddingBottom: 24,
     width: "100%",
   },
   dayDetailCard: {
-    maxWidth: 420,
+    maxWidth: 400,
     paddingBottom: 24,
     width: "100%",
   },
   eventDetailCard: {
-    maxWidth: 420,
+    maxWidth: 400,
     width: "100%",
   },
   filtersBottomSheet: {
-    maxWidth: 420,
+    maxWidth: 400,
     paddingBottom: 24,
     width: "100%",
   },
