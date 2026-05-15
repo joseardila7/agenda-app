@@ -13566,6 +13566,63 @@ const styles = StyleSheet.create({
 
 type AgendaStyles = typeof styles;
 
+const webStyleOverrides = StyleSheet.create({
+  safeArea: {
+    minHeight: "100%",
+  },
+  content: {
+    alignSelf: "center",
+    maxWidth: 760,
+    paddingBottom: 126,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    width: "100%",
+  },
+  authScrollContent: {
+    alignSelf: "center",
+    maxWidth: 520,
+    paddingBottom: 96,
+    paddingHorizontal: 20,
+    width: "100%",
+  },
+  floatingAddButton: {
+    bottom: 94,
+  },
+  appToast: {
+    bottom: 86,
+    left: 14,
+    right: 14,
+  },
+  modalOverlay: {
+    alignItems: "center",
+  },
+  dayDetailOverlay: {
+    alignItems: "center",
+  },
+  modalCard: {
+    maxWidth: 560,
+    paddingBottom: 24,
+    width: "100%",
+  },
+  dayDetailCard: {
+    maxWidth: 560,
+    paddingBottom: 24,
+    width: "100%",
+  },
+  eventDetailCard: {
+    maxWidth: 560,
+    width: "100%",
+  },
+  filtersBottomSheet: {
+    maxWidth: 560,
+    paddingBottom: 24,
+    width: "100%",
+  },
+  calendarOverlay: {
+    paddingBottom: 86,
+  },
+});
+
 function getDarkStyleColor(propertyName: string, color: string) {
   const normalizedColor = color.toUpperCase();
   const isTextColor = propertyName === "color";
@@ -13728,18 +13785,36 @@ function createDarkStyleOverrides<T extends Record<string, unknown>>(baseStyles:
 const darkStyleOverrides = StyleSheet.create(createDarkStyleOverrides(styles));
 
 function mergeAgendaStyles(isDark: boolean): AgendaStyles {
-  if (!isDark) {
-    return styles;
+  let mergedStyles: AgendaStyles = styles;
+
+  if (isDark) {
+    mergedStyles = Object.keys(styles).reduce((nextStyles, styleName) => {
+      const key = styleName as keyof AgendaStyles;
+
+      return {
+        ...nextStyles,
+        [key]: darkStyleOverrides[key]
+          ? [styles[key], darkStyleOverrides[key]]
+          : styles[key],
+      };
+    }, {} as AgendaStyles);
   }
 
-  return Object.keys(styles).reduce((mergedStyles, styleName) => {
+  if (Platform.OS !== "web") {
+    return mergedStyles;
+  }
+
+  const agendaWebStyleOverrides = webStyleOverrides as Partial<
+    Record<keyof AgendaStyles, object>
+  >;
+
+  return Object.keys(mergedStyles).reduce((nextStyles, styleName) => {
     const key = styleName as keyof AgendaStyles;
+    const webOverride = agendaWebStyleOverrides[key];
 
     return {
-      ...mergedStyles,
-      [key]: darkStyleOverrides[key]
-        ? [styles[key], darkStyleOverrides[key]]
-        : styles[key],
+      ...nextStyles,
+      [key]: webOverride ? [mergedStyles[key], webOverride] : mergedStyles[key],
     };
   }, {} as AgendaStyles);
 }

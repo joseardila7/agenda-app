@@ -5250,6 +5250,25 @@ const styles = StyleSheet.create({
 
 type SettingsStyles = typeof styles;
 
+const webStyleOverrides = StyleSheet.create({
+  safeArea: {
+    minHeight: "100%",
+  },
+  content: {
+    alignSelf: "center",
+    maxWidth: 760,
+    paddingBottom: 116,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    width: "100%",
+  },
+  appToast: {
+    bottom: 86,
+    left: 14,
+    right: 14,
+  },
+});
+
 function getDarkSettingsStyleColor(propertyName: string, color: string) {
   const normalizedColor = color.toUpperCase();
   const isTextColor = propertyName === "color";
@@ -5385,18 +5404,36 @@ const darkStyleOverrides = StyleSheet.create(
 );
 
 function getSettingsStyles(isDark: boolean): SettingsStyles {
-  if (!isDark) {
-    return styles;
+  let mergedStyles: SettingsStyles = styles;
+
+  if (isDark) {
+    mergedStyles = Object.keys(styles).reduce((nextStyles, styleName) => {
+      const key = styleName as keyof SettingsStyles;
+
+      return {
+        ...nextStyles,
+        [key]: darkStyleOverrides[key]
+          ? [styles[key], darkStyleOverrides[key]]
+          : styles[key],
+      };
+    }, {} as SettingsStyles);
   }
 
-  return Object.keys(styles).reduce((mergedStyles, styleName) => {
+  if (Platform.OS !== "web") {
+    return mergedStyles;
+  }
+
+  const settingsWebStyleOverrides = webStyleOverrides as Partial<
+    Record<keyof SettingsStyles, object>
+  >;
+
+  return Object.keys(mergedStyles).reduce((nextStyles, styleName) => {
     const key = styleName as keyof SettingsStyles;
+    const webOverride = settingsWebStyleOverrides[key];
 
     return {
-      ...mergedStyles,
-      [key]: darkStyleOverrides[key]
-        ? [styles[key], darkStyleOverrides[key]]
-        : styles[key],
+      ...nextStyles,
+      [key]: webOverride ? [mergedStyles[key], webOverride] : mergedStyles[key],
     };
   }, {} as SettingsStyles);
 }
