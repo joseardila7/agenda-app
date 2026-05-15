@@ -24,6 +24,7 @@
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
         "android.permission.POST_NOTIFICATIONS"
       ],
       "predictiveBackGestureEnabled": false
@@ -50,6 +51,18 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "8fad1a9b-f7e6-4d27-abc8-cc7c11056f93"
+      }
+    },
+    "owner": "joseardila",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/8fad1a9b-f7e6-4d27-abc8-cc7c11056f93"
     }
   }
 }
