@@ -922,85 +922,6 @@ function getReminderBadgeLabel(
   return reminderInfo.label;
 }
 
-function createInitialEvents(today: Date): AgendaEvent[] {
-  const weekStart = startOfWeek(today);
-  const eventData = [
-    {
-      id: "coffee",
-      title: "Café juntas",
-      description: "Plan tranquilo para empezar el día sin prisas.",
-      location: "Cafetería favorita",
-      dayOffset: 0,
-      startTime: "09:30",
-      reminder: "15 min antes",
-      palette: EVENT_COLORS[0],
-      category: "personal" as EventCategory,
-    },
-    {
-      id: "workout",
-      title: "Pilates",
-      description: "Clase reservada. Llevar agua y calcetines.",
-      location: "Centro deportivo",
-      dayOffset: 1,
-      startTime: "18:00",
-      reminder: "1 hora antes",
-      palette: EVENT_COLORS[1],
-      category: "personal" as EventCategory,
-    },
-    {
-      id: "dinner",
-      title: "Cena especial",
-      description: "Reservar sitio bonito y confirmar hora.",
-      location: "Restaurante pendiente",
-      dayOffset: 2,
-      startTime: "21:00",
-      reminder: "2 horas antes",
-      palette: EVENT_COLORS[2],
-      category: "cita" as EventCategory,
-    },
-    {
-      id: "study",
-      title: "Bloque personal",
-      description: "Tiempo para ordenar tareas, notas y pendientes.",
-      location: "Casa",
-      dayOffset: 3,
-      startTime: "17:15",
-      reminder: "30 min antes",
-      palette: EVENT_COLORS[3],
-      category: "trabajo" as EventCategory,
-    },
-    {
-      id: "market",
-      title: "Compra semanal",
-      description: "Fruta, cena del finde y cosas de casa.",
-      location: "Supermercado",
-      dayOffset: 5,
-      startTime: "11:00",
-      reminder: "Sin aviso",
-      palette: EVENT_COLORS[4],
-      category: "casa" as EventCategory,
-    },
-  ];
-
-  return eventData.map((event) => ({
-    id: event.id,
-    title: event.title,
-    description: event.description,
-    location: event.location,
-    completed: false,
-    dateKey: toDateKey(addDays(weekStart, event.dayOffset)),
-    startTime: event.startTime,
-    color: event.palette.color,
-    tone: event.palette.tone,
-    reminder: event.reminder,
-    recurrence: "none",
-    recurrenceInterval: 1,
-    recurrenceWeekdays: [],
-    recurrenceEndDate: undefined,
-    category: event.category,
-  }));
-}
-
 function createEmptyForm(date: Date): EventForm {
   return {
     title: "",
@@ -2945,7 +2866,7 @@ export default function HomeScreen() {
     const currentDay = today.getDay();
     return currentDay === 0 ? 6 : currentDay - 1;
   });
-  const [events, setEvents] = useState(() => createInitialEvents(today));
+  const [events, setEvents] = useState<AgendaEvent[]>([]);
   const [categories, setCategories] = useState(() => createDefaultCategories());
   const [eventTasks, setEventTasks] = useState<AgendaEventTask[]>([]);
   const [eventTemplates, setEventTemplates] = useState(() =>
@@ -3007,6 +2928,7 @@ export default function HomeScreen() {
   const signOutConfirmScale = useRef(new Animated.Value(0.9)).current;
   const eventDetailFadeOpacity = useRef(new Animated.Value(0)).current;
   const eventModalFadeOpacity = useRef(new Animated.Value(0)).current;
+  const dayDetailFadeOpacity = useRef(new Animated.Value(0)).current;
   const filtersFadeOpacity = useRef(new Animated.Value(0)).current;
   const syncTooltipOpacity = useRef(new Animated.Value(0)).current;
   const syncTooltipScale = useRef(new Animated.Value(0.9)).current;
@@ -4533,12 +4455,38 @@ export default function HomeScreen() {
   }
 
   function openDayDetail(index: number) {
+    dayDetailFadeOpacity.stopAnimation();
+    dayDetailFadeOpacity.setValue(0);
     setSelectedDayIndex(index);
     setIsDayDetailVisible(true);
+    Animated.timing(dayDetailFadeOpacity, {
+      duration: 180,
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+  }
+
+  function finishCloseDayDetail() {
+    dayDetailFadeOpacity.setValue(0);
+    setIsDayDetailVisible(false);
   }
 
   function closeDayDetail() {
-    setIsDayDetailVisible(false);
+    if (!isDayDetailVisible) {
+      finishCloseDayDetail();
+      return;
+    }
+
+    dayDetailFadeOpacity.stopAnimation();
+    Animated.timing(dayDetailFadeOpacity, {
+      duration: 180,
+      toValue: 0,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        finishCloseDayDetail();
+      }
+    });
   }
 
   function toggleDayOrganizeMode() {
@@ -7811,12 +7759,14 @@ export default function HomeScreen() {
       </Modal>
 
       <Modal
-        animationType="fade"
+        animationType="none"
         onRequestClose={closeDayDetail}
         transparent
         visible={isDayDetailVisible}
       >
-        <View style={styles.dayDetailOverlay}>
+        <Animated.View
+          style={[styles.dayDetailOverlay, { opacity: dayDetailFadeOpacity }]}
+        >
           <Pressable style={styles.modalBackdrop} onPress={closeDayDetail} />
           <DraggableBottomSheet
             animationKey={isDayDetailVisible}
@@ -8018,7 +7968,7 @@ export default function HomeScreen() {
               )}
             </ScrollView>
           </DraggableBottomSheet>
-        </View>
+        </Animated.View>
       </Modal>
 
       <Modal
